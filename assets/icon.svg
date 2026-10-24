@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- 念念收藏夹 LOGO：一本摊开的小书 + 一枚低语气泡。
+       书 = 收藏与整理，气泡 = “念念”那声嘀咕。焦糖暖色，圆角，无锐边。 -->
+  <defs>
+    <linearGradient id="nv-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2a2118"/>
+      <stop offset="1" stop-color="#3d2f21"/>
+    </linearGradient>
+    <linearGradient id="nv-book" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f6ecd8"/>
+      <stop offset="1" stop-color="#e6d5b8"/>
+    </linearGradient>
+    <linearGradient id="nv-bubble" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f0b46a"/>
+      <stop offset="1" stop-color="#d98b3c"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="6" y="6" width="244" height="244" rx="58" fill="url(#nv-bg)"/>
+
+  <!-- 摊开的书 -->
+  <path d="M128 96c-18-14-42-16-62-12v104c20-4 44-2 62 12 18-14 42-16 62-12V84c-20-4-44-2-62 12z"
+        fill="url(#nv-book)"/>
+  <path d="M128 96v104" stroke="#c9a878" stroke-width="4" stroke-linecap="round"/>
+  <path d="M84 118h30M84 140h30M84 162h20" stroke="#b39268" stroke-width="6" stroke-linecap="round" opacity=".65"/>
+  <path d="M142 118h30M142 140h30M152 162h20" stroke="#b39268" stroke-width="6" stroke-linecap="round" opacity=".65"/>
+
+  <!-- 低语气泡：右下角，带小尾巴 -->
+  <path d="M158 176h56a14 14 0 0 0 14-14v-22a14 14 0 0 0-14-14h-30l-14-12v12h-12a14 14 0 0 0-14 14v22a14 14 0 0 0 14 14z"
+        fill="url(#nv-bubble)"/>
+  <circle cx="172" cy="151" r="5" fill="#3d2f21"/>
+  <circle cx="188" cy="151" r="5" fill="#3d2f21"/>
+  <circle cx="204" cy="151" r="5" fill="#3d2f21"/>
+</svg>

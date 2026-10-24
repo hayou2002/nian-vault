@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>选择要收藏的内容</title>
+  <style>
+    :root { --bg: var(--hana-bg, #fffdf8); --fg: var(--hana-text, #3b342b); --muted: var(--hana-text-muted, #82796d); --border: var(--hana-border, #e4dccf); --accent: var(--hana-accent, #bd783f); }
+    * { box-sizing: border-box; }
+    body { margin:0; padding:12px 16px 16px; background:var(--bg); color:var(--fg); font:14px/1.5 system-ui,"Microsoft YaHei",sans-serif; }
+    h2 { margin:0 0 3px; font-size:16px; } p { margin:0 0 10px; color:var(--muted); font-size:12px; }
+    #items { display:grid; gap:7px; max-height:245px; overflow:auto; }
+    .item { display:grid; grid-template-columns:18px 1fr; gap:8px; align-items:start; padding:9px 10px; border:1px solid var(--border); border-radius:10px; background:color-mix(in srgb,var(--bg) 94%,var(--accent)); cursor:pointer; }
+    .item:has(input:checked) { border-color:var(--accent); background:color-mix(in srgb,var(--bg) 88%,var(--accent)); }
+    .item input { margin:3px 0 0; accent-color:var(--accent); }
+    .title { display:block; font-weight:650; }
+    .preview { display:block; margin-top:3px; color:var(--muted); font-size:12px; line-height:1.4; }
+    .who { display:inline-block; margin-right:5px; font-size:11px; color:var(--accent); font-weight:600; }
+    .foot { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:9px; color:var(--muted); font-size:12px; }
+    #empty { padding:18px; text-align:center; color:var(--muted); }
+    #done { padding:10px 0 2px; font-size:13px; }
+    #done .ok { color:var(--accent); font-weight:650; }
+    #err { color:#c0402f; }
+    button { font:inherit; font-size:12px; padding:5px 11px; border:1px solid var(--border); border-radius:8px; background:transparent; color:var(--fg); cursor:pointer; }
+    button:hover { background:color-mix(in srgb,var(--fg) 7%,transparent); }
+    button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+    button.primary:hover { background:color-mix(in srgb,var(--accent) 86%,#000); }
+    button[disabled] { opacity:.5; cursor:default; }
+    [hidden] { display:none !important; }
+  </style>
+</head>
+<body>
+  <h2>📥 选要收藏的内容</h2>
+  <p>从这段对话里挑出要存的片段，确认后由 AI 生成标题、分类和标签，收入念念收藏夹。</p>
+  <div id="items"></div>
+  <div class="foot" id="foot">
+    <span id="tools"><button id="all" type="button">全选</button> <button id="none" type="button">全不选</button></span>
+    <span id="count"></span>
+  </div>
+  <div class="foot" id="act">
+    <button class="primary" id="go" type="button">收藏选中的</button>
+    <button id="cancel" type="button">取消</button>
+  </div>
+  <div id="done" hidden></div>
+
+  <script type="module">
+    import { hana } from "./assets/sdk.js";
+    const $ = (id) => document.getElementById(id);
+    let items = [];
+    let busy = false;
+
+    const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+    async function load() {
+      let pick = null;
+      try {
+        const r = await hana.api.fetch("/clip/pick");
+        pick = (await r.json())?.pick;
+      } catch { /* 取不到就按空处理，下面会显示提示 */ }
+      // 输入栏按钮那条路：卡片是空投的，数据统一从 /clip/pick 取。
+      const ctxItems = (window.__hana_ctx?.data?.items) || [];
+      items = Array.isArray(pick?.items) && pick.items.length ? pick.items : ctxItems;
+      render();
+    }
+
+    function render() {
+      if (!items.length) {
+        $("items").innerHTML = `<div id="empty">没有可选的片段（可能已过期）。请回到对话里再点一次输入栏的「念念收藏」。</div>`;
+        $("foot").hidden = true;
+        $("act").hidden = true;
+        return;
+      }
+      $("items").innerHTML = items.map((it, i) => `
+        <label class="item">
+          <input type="checkbox" value="${esc(it.id)}" ${i < 3 ? "checked" : ""}>
+          <span>
+            <span class="title">${it.from ? `<span class="who">${esc(it.from)}</span>` : ""}${esc(it.title || "内容片段")}</span>
+            <span class="preview">${esc((it.text || "").slice(0, 180))}</span>
+          </span>
+        </label>`).join("");
+      const boxes = () => [...$("items").querySelectorAll("input")];
+      const update = () => { $("count").textContent = `已选 ${boxes().filter((x) => x.checked).length} / ${items.length} 条`; };
+      boxes().forEach((x) => x.addEventListener("change", update));
+      $("all").onclick = () => { boxes().forEach((x) => (x.checked = true)); update(); };
+      $("none").onclick = () => { boxes().forEach((x) => (x.checked = false)); update(); };
+      update();
+    }
+
+    async function commit() {
+      const ids = [...$("items").querySelectorAll("input:checked")].map((x) => x.value);
+      if (!ids.length) { $("count").textContent = "先勾选至少一条"; return; }
+      busy = true;
+      $("go").disabled = true;
+      $("count").textContent = "AI 正在整理…";
+      try {
+        const r = await hana.api.fetch("/clip/pick", { method: "POST", body: JSON.stringify({ ids, category: "auto" }) });
+        const out = await r.json();
+        if (!out?.ok) throw new Error(out?.error || "收藏失败");
+        $("items").hidden = true;
+        $("foot").hidden = true;
+        $("act").hidden = true;
+        $("done").hidden = false;
+        $("done").innerHTML = `<div class="ok">✓ 已收藏 ${out.count} 条到「${esc(out.entries?.[0]?.category || "收件箱")}」</div>` +
+          `<ul style="margin:6px 0 0;padding-left:18px">${(out.entries || []).map((e) => `<li>${esc(e.title)}${e.tags?.length ? `<span style="color:var(--muted)"> #${esc(e.tags.join(" #"))}</span>` : ""}</li>`).join("")}</ul>`;
+      } catch (err) {
+        $("count").innerHTML = `<span id="err">❌ ${esc(err?.message || err)}</span>`;
+        $("go").disabled = false;
+      } finally {
+        busy = false;
+      }
+    }
+
+    $("go").onclick = () => { if (!busy) commit(); };
+    $("cancel").onclick = async () => {
+      if (busy) return;
+      try { await hana.api.fetch("/clip/pick", { method: "POST", body: JSON.stringify({ ids: [], cancel: true }) }); } catch { /* 取消失败无所谓 */ }
+      $("items").hidden = true; $("foot").hidden = true; $("act").hidden = true;
+      $("done").hidden = false;
+      $("done").textContent = "已取消，没有写入任何内容。";
+    };
+
+    await load();
+    hana.ready();
+  </script>
+</body>
+</html>

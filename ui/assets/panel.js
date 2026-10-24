@@ -1,0 +1,2256 @@
+import { hana } from "./sdk.js";
+import { icon } from "./icons.js";
+import { renderMarkdown } from "./markdown.js";
+
+const API = {
+  get: (path) => hana.api.fetch(path).then((r) => r.json()),
+  post: (path, data) => hana.api.fetch(path, { method: "POST", body: JSON.stringify(data) }).then((r) => r.json()),
+};
+
+const $ = (id) => document.getElementById(id);
+const appRoot = $("app");
+
+let state = {
+  categories: [],
+  entries: [],
+  tree: [],           // /home 的分类树缓存（带 parent/order），展开子收藏用它
+  expanded: new Set(JSON.parse(localStorage.getItem("nv.expanded") || "[]")),
+  selected: null,
+  filter: { category: "", query: "", tag: "" },
+  sort: "-updated",
+  view: localStorage.getItem("nv.view") || "list", // list | card | compact
+  root: "",
+};
+
+const TYPE_ICONS = { note: "note", text: "text", link: "link", image: "image", video: "video", file: "file", folder: "folder", memory: "memory", experience: "experience" };
+const typeIcon = (t) => icon(TYPE_ICONS[t] || "note", 14);
+
+const show = (el, v) => { if (el) el.hidden = !v; };
+const setActive = (el, v) => { if (el) el.classList.toggle("active", !!v); };
+function toast(text, time = 2200) {
+  const t = $("toast");
+  if (!t) return;
+  t.textContent = text;
+  show(t, true);
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => show(t, false), time);
+}
+
+// 面板内的确认/输入框：iframe 沙箱里 window.prompt/confirm 可能被禁，
+// 统一用自绘弹窗，避免点了没反应。
+function dialog({ title, bodyHtml, okText = "确定", onOk, onMount, onClose }) {
+  const modal = $("modal");
+  $("m-title").textContent = title;
+  $("m-body").innerHTML = bodyHtml || "";
+  $("m-ok").textContent = okText;
+  show(modal, true);
+  const close = () => {
+    show(modal, false);
+    $("m-ok").onclick = null;
+    $("m-cancel").onclick = null;
+    onClose?.();
+  };
+  $("m-cancel").onclick = close;
+  $("m-ok").onclick = async () => {
+    let r;
+    try {
+      r = await onOk?.();
+    } catch (err) {
+      // onOk 抛异常时不能静默：否则用户点了按钮什么都没发生，还不知道为什么
+      toast(`❌ 操作失败：${err?.message || err}`);
+      console.error("[nian-vault] 弹窗确认操作失败", err);
+      return;
+    }
+    if (r !== false) close();
+  };
+  onMount?.();
+  return close;
+}
+
+// 单行输入：返回字符串，取消返回 null
+function promptText(title, value = "", placeholder = "") {
+  return new Promise((resolve) => {
+    let settled = false;
+    const once = (v) => { if (!settled) { settled = true; resolve(v); } };
+    dialog({
+      title,
+      bodyHtml: `<input id="m-input" class="m-input" value="${escapeAttr(value)}" placeholder="${escapeAttr(placeholder)}">`,
+      okText: "确定",
+      onOk: () => once($("m-input").value.trim()),
+      onClose: () => once(null),
+      onMount: () => {
+        const i = $("m-input");
+        i.focus();
+        i.select();
+        i.addEventListener("keydown", (e) => { if (e.key === "Enter") $("m-ok").click(); });
+      },
+    });
+  });
+}
+
+// 危险操作确认：true = 确认，false = 取消
+function confirmBox(title, bodyHtml) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const once = (v) => { if (!settled) { settled = true; resolve(v); } };
+    dialog({
+      title,
+      bodyHtml: `<p>${escapeHtml(bodyHtml || "")}</p>`,
+      okText: "删除",
+      onOk: () => once(true),
+      onClose: () => once(false),
+    });
+  });
+}
+
+// 选一个分类：返回分类名，取消返回 null
+function pickCategory(current = "") {
+  const opts = state.categories.map((c) =>
+    `<option value="${escapeAttr(c.name)}"${c.name === current ? " selected" : ""}>${escapeHtml(c.name)}（${c.count || 0}）</option>`).join("");
+  return new Promise((resolve) => {
+    let settled = false;
+    const once = (v) => { if (!settled) { settled = true; resolve(v); } };
+    dialog({
+      title: "移动到分类",
+      bodyHtml: `<select id="m-cat" class="m-input">${opts}</select>`,
+      okText: "移动",
+      onOk: () => once($("m-cat").value),
+      onClose: () => once(null),
+    });
+  });
+}
+
+// ---------------- 数据 ----------------
+async function loadStatus() {
+  const r = await API.get("/status");
+  if (r.ok) {
+    state.root = r.configured || r.root;
+    if (r.warning) toast(`⚠ ${r.warning}`, 5000);
+  }
+}
+
+async function loadCategories() {
+  const r = await API.get("/categories");
+  if (!r.ok) return toast(`❌ ${r.error}`);
+  state.categories = r.categories || [];
+  await refreshTree();
+  renderCategories();
+}
+
+function renameCategory(from) {
+  const cur = state.categories.find((c) => c.name === from);
+  dialog({
+    title: `修改分类「${from}」`,
+    bodyHtml: `<input id="d-name" value="${escapeAttr(from)}"${from === "收件箱" ? " disabled" : ""}><input id="d-desc" placeholder="说明" value="${escapeAttr(cur?.description || "")}">`,
+    onMount: () => $("d-name").focus(),
+    onOk: async () => {
+      const r = await API.post("/categories/rename", { from, to: $("d-name").value.trim() || from, description: $("d-desc").value.trim() });
+      if (!r.ok) { toast(`❌ ${r.error}`); return false; }
+      await loadCategories();
+      await selectCategory(r.name);
+      toast("✓ 已保存");
+    },
+  });
+}
+
+function deleteCategory(name) {
+  const n = state.categories.find((c) => c.name === name)?.count || 0;
+  dialog({
+    title: "删除分类",
+    bodyHtml: `<p>删除「${escapeHtml(name)}」后，里面 ${n} 条内容会移到「收件箱」，不会被删掉。</p>`,
+    okText: "删除",
+    onOk: async () => {
+      const r = await API.post("/categories/delete", { name });
+      if (!r.ok) { toast(`❌ ${r.error}`); return false; }
+      await loadCategories();
+      await selectCategory("");
+      toast(`✓ 已删除，${r.movedToInbox} 条移到收件箱`);
+    },
+  });
+}
+
+// 树的数据：/home 返回每个分类下的条目（带 parent/order）。
+// 只取当前分类那棵，渲染成可展开的层级。
+function kidNodes(cat, parentId, _seen) {
+  // 防环 + 限深：数据里出现 parent 循环（旧版本遗留/手工改文件）时不能把页面卡死
+  const seen = _seen || new Set();
+  if (parentId && seen.has(parentId)) return [];
+  if (parentId) seen.add(parentId);
+  return (cat.entries || [])
+    .filter((e) => (e.parent || null) === parentId)
+    .slice(0, 500)
+    .map((e) => ({ e, kids: kidNodes(cat, e.id, seen) }));
+}
+
+function treeHtml(cat) {
+  const build = (node, depth) => {
+    const { e, kids } = node;
+    const hasKids = kids.length > 0;
+    const open = state.expanded.has(e.id);
+    return `<div class="kid-row${e.id === state.selected ? " active" : ""}" style="--depth:${depth}" data-kid="${e.id}" data-kids-cat="${escapeAttr(cat.name)}">` +
+      (hasKids
+        ? `<span class="fold kid-fold${open ? " open" : ""}" data-toggle="${e.id}">${open ? "▾" : "▸"}</span>`
+        : `<span class="fold kid-fold-void"></span>`) +
+      `<span class="kid-icon">${icon(TYPE_ICONS[e.type] || "note", 13)}</span>` +
+      `<span class="kid-name${e.pinned ? " pin" : ""}">${escapeHtml(e.title)}</span>` +
+      (hasKids ? `<span class="kid-badge">${kids.length}</span>` : "") +
+      `</div>` +
+      (hasKids && open ? `<div class="kid-sub">${kids.map((k) => build(k, depth + 1)).join("")}</div>` : "");
+  };
+  return kidNodes(cat, null).map((n) => build(n, 0)).join("");
+}
+
+// 分类列表：点标题铺出这个分类的收藏卡片墙；点左侧箭头展开/收起树。
+function renderCategories() {
+  const inbox = state.categories.find((c) => c.name === "收件箱");
+  const treeByName = new Map(state.tree.map((c) => [c.name, c]));
+  const items = state.categories.map((c) => {
+      const tc = treeByName.get(c.name);
+      const roots = kidNodes(tc || { entries: [] }, null);
+      const arrow = roots.length ? (state.expanded.has("cat:" + c.name) ? "▾" : "▸") : "";
+      const badge = c.name === "收件箱" && inbox?.count ? `<span class="badge" title="收件箱有 ${inbox.count} 条新收藏">${inbox.count}</span>` : `<span class="count">${c.count || ""}</span>`;
+      return `<div class="cat-row${c.name === state.filter.category ? " active" : ""}${c.starred ? " starred" : ""}" data-cat="${escapeAttr(c.name)}">` +
+        `<button class="cat" data-cat="${escapeAttr(c.name)}" title="${roots.length ? "点标题铺出这个分类的收藏卡片；点左侧箭头展开/收起树" : "点标题铺出这个分类的收藏卡片"}"><span class="fold cat-fold" data-fold="${escapeAttr(c.name)}">${arrow}</span><span class="cat-icon">${c.name === "收件箱" ? icon("inbox", 15) : icon("folder", 15)}</span><span class="cat-name">${escapeHtml(c.name)}</span>${badge}</button>` +
+        `<button class="star" data-star="${escapeAttr(c.name)}" title="${c.starred ? "取消星标" : "星标分类"}">${c.starred ? "★" : "☆"}</button>` +
+        `</div>` +
+        `<div class="cat-kids" data-kids="${escapeAttr(c.name)}"${state.expanded.has("cat:" + c.name) ? "" : " hidden"}>${state.expanded.has("cat:" + c.name) ? (treeHtml(tc || { entries: [] }) || '<div class="kid-empty muted">暂无内容</div>') : ""}</div>`;
+    });
+  const box = $("cats");
+  if (!box) return;
+  box.innerHTML = items.join("");
+  for (const b of box.querySelectorAll(".cat")) {
+    b.addEventListener("click", (ev) => {
+      // 点箭头只展开/收起，不进分类
+      if (ev.target.classList.contains("cat-fold")) {
+        ev.stopPropagation();
+        const name = ev.target.dataset.fold;
+        const key = "cat:" + name;
+        if (state.expanded.has(key)) state.expanded.delete(key);
+        else state.expanded.add(key);
+        saveExpanded();
+        renderCategories();
+        return;
+      }
+      // 点标题：铺出这个分类的收藏卡片墙；箭头只管展开树
+      openWall("category", b.dataset.cat);
+    });
+  }
+  for (const el of box.querySelectorAll(".kid-row")) {
+    el.addEventListener("click", async (ev) => {
+      const fold = ev.target.closest(".kid-fold");
+      if (fold && !fold.classList.contains("kid-fold-void")) {
+        const id = fold.dataset.toggle;
+        if (state.expanded.has(id)) state.expanded.delete(id);
+        else state.expanded.add(id);
+        saveExpanded();
+        renderCategories();
+        return;
+      }
+      showListView();
+      // selectCategory 结尾会选空条目，必须等它走完再选目标，
+      // 否则后一个 selectEntry(null) 会把刚打开的详情清掉。
+      await selectCategory(el.dataset.kidsCat);
+      await selectEntry(el.dataset.kid);
+    });
+  }
+  for (const b of box.querySelectorAll(".star")) {
+    b.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      const r = await API.post("/categories/star", { name: b.dataset.star });
+      if (!r.ok) return toast(`❌ ${r.error}`);
+      await loadCategories();
+     
+    });
+  }
+ 
+  wireTreeMenus(box);
+}
+
+// ---- 右键菜单 ----------------------------------------------------------
+// 侧栏不再常驻那些「改名/删除」按钮条了（你提的②），
+// 全部收进右键菜单：分类行右键管分类，树条目右键管条目。
+function treeMenu(ev, items) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  const old = document.getElementById("tree-menu");
+  if (old) old.remove();
+  const m = document.createElement("div");
+  m.className = "tree-menu";
+  m.id = "tree-menu";
+  m.innerHTML = items.map((it, i) =>
+    `<button data-i="${i}" class="${it.danger ? "danger" : ""}">${it.label}</button>`).join("");
+  document.body.appendChild(m);
+  // 贴边收一收，别让菜单跑出视口
+  const r = m.getBoundingClientRect();
+  const x = Math.min(ev.clientX, window.innerWidth - r.width - 8);
+  const y = Math.min(ev.clientY, window.innerHeight - r.height - 8);
+  m.style.left = Math.max(4, x) + "px";
+  m.style.top = Math.max(4, y) + "px";
+  for (const b of m.querySelectorAll("button")) {
+    b.addEventListener("click", async () => {
+      // 先摘监听再跑动作：跑动作时可能弹对话框，
+      // 对话框上的 mousedown 会触发 off，把监听清掉
+      document.removeEventListener("mousedown", off);
+      m.remove();
+      const it = items[Number(b.dataset.i)];
+      try { await it.run(); } catch (err) { toast(`❌ ${err?.message || err}`); }
+    });
+  }
+  // 菜单移除后这条监听必须一起走，否则每次开菜单都多留一个
+  const off = (e) => {
+    if (!m.contains(e.target)) {
+      m.remove();
+      document.removeEventListener("mousedown", off);
+    }
+  };
+  document.addEventListener("mousedown", off);
+}
+
+function wireTreeMenus(box) {
+  for (const row of box.querySelectorAll(".cat-row")) {
+    const name = row.dataset.cat;
+    if (!name) continue;
+    row.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      const starred = !!state.categories.find((c) => c.name === name)?.starred;
+      treeMenu(ev, [
+        { label: "📇 铺出这个分类", run: () => openWall("category", name) },
+        { label: "✨ AI 整理这个分类", run: () => organizeInboxWithAI(name) },
+        { label: "✏ 改名", run: async () => {
+            const nn = await promptText("重命名分类", name, "新的分类名");
+            if (!nn || nn === name) return;
+            const r = await API.post("/categories/rename", { from: name, to: nn });
+            if (!r.ok) return toast(`❌ ${r.error}`);
+            await loadCategories(); await loadEntries();
+          } },
+        { label: starred ? "☆ 取消星标" : "★ 星标", run: async () => {
+            const r = await API.post("/categories/star", { name });
+            if (!r.ok) return toast(`❌ ${r.error}`);
+            await loadCategories(); await loadEntries();
+          } },
+        { label: "🗑 删除分类", danger: true, run: async () => {
+            const cnt = state.categories.find((c) => c.name === name)?.count || 0;
+            if (!(await confirmBox(`删除「${name}」？`, `这个分类下的 ${cnt} 条收藏会被移到「收件箱」，不会丢失。分类本身会被移除。`))) return;
+            const r = await API.post("/categories/delete", { name });
+            if (!r.ok) return toast(`❌ ${r.error}`);
+            await loadCategories(); await loadEntries();
+          } },
+      ]);
+    });
+  }
+  for (const row of box.querySelectorAll(".kid-row")) {
+    const id = row.dataset.kid;
+    const cat = row.dataset.kidsCat;
+    row.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      treeMenu(ev, [
+        { label: "📖 打开", run: async () => { showWall(false); await selectCategory(cat); await selectEntry(id); } },
+        { label: "⧉ 复制为新条目", run: async () => {
+            const r = await API.post(`/entry/duplicate`, { id });
+            if (!r.ok) return toast(`❌ ${r.error}`);
+            await loadCategories(); await loadEntries();
+          } },
+        { label: "📦 移动到…", run: async () => {
+            const to = await pickCategory(cat);
+            if (!to || to === cat) return;
+            const r = await API.post("/entry", { id, category: to });
+            if (!r.ok) return toast(`❌ ${r.error}`);
+            await loadCategories(); await loadEntries();
+          } },
+        { label: "✏ 重命名", run: async () => {
+            const cur = (await API.get(`/entry?id=${encodeURIComponent(id)}`))?.entry?.title || "";
+            const nn = await promptText("重命名", cur, "新标题");
+            if (!nn || nn === cur) return;
+            const r = await API.post("/entry", { id, title: nn });
+            if (!r.ok) return toast(`❌ ${r.error}`);
+            await loadCategories(); await loadEntries();
+          } },
+        { label: "📌 固定到首页", run: async () => {
+            const r = await API.post("/entry", { id, homePinned: true });
+            if (!r.ok) return toast(`❌ ${r.error}`);
+            await loadCategories(); await loadEntries();
+          } },
+        { label: "🗑 删除", danger: true, run: async () => {
+            if (!(await confirmBox("删除这条收藏？", "删除后无法恢复。"))) return;
+            const r = await API.post("/entry/delete", { id });
+            if (!r.ok) return toast(`❌ ${r.error}`);
+            await loadCategories(); await loadEntries();
+          } },
+      ]);
+    });
+  }
+}
+
+// 展开状态记在 localStorage，下次打开还是你展开的样子
+function saveExpanded() {
+  try { localStorage.setItem("nv.expanded", JSON.stringify([...state.expanded].slice(0, 500))); } catch { /* 隐私模式下存不了就算了 */ }
+}
+
+// 拉一次 /home 刷新树数据（分类数量、层级、子条目）
+async function refreshTree() {
+  const r = await API.get("/home");
+  if (r.ok) state.tree = r.tree || [];
+}
+
+// 选中某个分类时，行尾浮出改名/删除；没选中就收起
+
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function escapeAttr(s) {
+  return escapeHtml(s).replace(/"/g, "&quot;");
+}
+
+async function selectCategory(name) {
+  state.filter.category = name || "";
+  state.filter.query = "";
+  if ($("search")) $("search").value = "";
+  const cat = state.categories.find((c) => c.name === name);
+  renderCategories();
+  await loadEntries();
+  await selectEntry(null);
+  if (window.innerWidth <= 760) {
+    appRoot.classList.remove("show-detail");
+    appRoot.classList.add("show-side");
+  }
+}
+
+async function loadEntries() {
+  const q = new URLSearchParams();
+  if (state.filter.category) q.set("category", state.filter.category);
+  // 支持在搜索框里直接输入 #标签名 过滤
+  let rawQ = state.filter.query;
+  let activeTag = state.filter.tag;
+  const tagMatch = /^#(\S+)\s*(.*)$/.exec(rawQ);
+  if (tagMatch && !activeTag) {
+    activeTag = tagMatch[1];
+    rawQ = tagMatch[2];
+  }
+  if (rawQ) q.set("q", rawQ);
+  if (activeTag) q.set("tag", activeTag);
+  const r = await API.get(`/entries?${q.toString()}`);
+  if (!r.ok) return toast(`❌ ${r.error}`);
+  state.entries = r.entries || [];
+}
+
+
+// 视频/网页收藏的封面卡片。只允许 https 封面与播放器，防注入。
+function renderCover(e) {
+  // 封面卡在正文区顶部（detail-main 里 view 之前），不挤在标题行
+  const host = $("detail-main");
+  const wrap = host.querySelector(":scope > .cover-wrap");
+  if (wrap) wrap.remove();
+  const isMedia = e.type === "video" || e.type === "link";
+  const cover = isMedia && /^https:\/\//i.test(e.cover || "") ? e.cover : null;
+  const embed = isMedia && /^https:\/\/player\.bilibili\.com\//i.test(e.embed || "") ? e.embed : null;
+  const href = isMedia && /^https:\/\//i.test(e.source || "") ? e.source : null;
+  if (!cover) return;
+  const play = embed
+    ? `<button class="cover-play" id="btn-embed" title="在页内播放">▶</button>`
+    : href
+      ? `<a class="cover-play" href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer" title="打开原页">▶</a>`
+      : "";
+  host.insertAdjacentHTML("afterbegin",
+    `<div class="cover-wrap"><div class="cover-card">${play}<img src="${escapeAttr(cover)}" alt="封面" loading="lazy" referrerpolicy="no-referrer">${embed ? `<div class="cover-embed" id="embed-box" hidden></div>` : ""}</div></div>`);
+  if (embed) {
+    $("btn-embed").addEventListener("click", () => {
+      const box = $("embed-box");
+      if (box.hidden) {
+        box.innerHTML = `<iframe src="${escapeAttr(embed)}" allowfullscreen allow="autoplay; encrypted-media" sandbox="allow-scripts allow-same-origin allow-presentation" referrerpolicy="no-referrer"></iframe>`;
+        box.hidden = false;
+      } else {
+        box.hidden = true;
+        box.innerHTML = "";
+      }
+    });
+  }
+}
+
+// 详情页：把只读复选框接成可点（改回原笔记对应行），必须在 v-body.innerHTML 渲染后调用！
+function wireViewTasks(entry) {
+  const boxes = $("v-body").querySelectorAll("input[type=checkbox]");
+  if (!boxes.length) return;
+  const todos = entry.todos || [];
+  const used = new Set();
+  boxes.forEach((box) => {
+    const text = (box.parentElement?.textContent || "").trim();
+    const t = todos.find((x, i) => !used.has(i) && x.text === text);
+    if (!t) return;
+    used.add(todos.indexOf(t));
+    box.disabled = false;
+    box.dataset.line = t.line;
+    box.addEventListener("change", async () => {
+      const r = await API.post("/task/toggle", { id: entry.id, line: Number(box.dataset.line) });
+      if (!r.ok) { box.checked = !box.checked; return toast(`❌ ${r.error}`); }
+      toast(r.done ? "✓ 已完成" : "已取消完成");
+    });
+  });
+}
+
+function setEditMode(editing) {
+  show($("edit"), editing);
+  show($("detail-main"), !editing);
+  if (editing) show($("toc"), false);
+}
+
+// ---------------- 详情 ----------------
+async function selectEntry(id) {
+  state.selected = id || null;
+  try {
+  if (!id) {
+    // 不选条目时，右栏留引导文案，不是一整片死白
+    showView("detail");
+    show($("detail-main"), true);
+    show($("edit"), false);
+    show($("detail-hint"), true);
+    $("v-title").textContent = "";
+    $("v-meta").innerHTML = "";
+    $("v-body").innerHTML = "";
+    appRoot.classList.remove("show-detail");
+    return;
+  }
+  const r = await API.get(`/entry?id=${encodeURIComponent(id)}`);
+  if (!r.ok) return toast(`❌ ${r.error}`);
+  const e = r.entry;
+  $("v-title").textContent = e.title;
+  renderCover(e);
+  renderMoreMenu(e);
+  API.post("/entry/opened", { id: e.id }).catch(() => {});
+  $("v-meta").innerHTML =
+    `<strong>${escapeHtml(e.category)}</strong> · ${typeIcon(e.type)} ${escapeHtml(e.type)} · ${String(e.updated || "").slice(0, 10)}` +
+    (e.parentTitle ? renderMarkdown(` · 属于 [[${e.parentTitle}]]`).replace(/^<p>|<\/p>$/g, "") : "") +
+    (e.source ? ` · 来源 ${
+      /^(https?:\/\/)/i.test(e.source)
+        ? `<a href="${escapeAttr(e.source)}" target="_blank" rel="noopener noreferrer">${escapeHtml(String(e.source).slice(0, 60))}</a>`
+        : `<span title="${escapeAttr(e.source)}">${escapeHtml(String(e.source).slice(0, 60))}</span>`
+    }` : "") +
+    (e.tags?.length ? `<br>${e.tags.map((t) => `<span class="tag" data-filter-tag="${escapeAttr(t)}">${escapeHtml(t)}</span>`).join("")}` : "") +
+    (e.session ? ` <button class="link-btn" id="meta-session" title="把焦点交回这条收藏所在的对话">💬 来自对话</button>` : "");
+  for (const tagEl of $("v-meta").querySelectorAll(".tag[data-filter-tag]")) {
+    tagEl.addEventListener("click", () => {
+      // 详情页点标签：铺出同标签的收藏卡片，方便顺藤摸瓜找别的
+      state.filter.tag = tagEl.dataset.filterTag;
+      openWall("tag", tagEl.dataset.filterTag);
+    });
+  }
+  $("v-body").innerHTML = renderMarkdown(e.content);
+  show($("detail-hint"), false);
+  // ★ Bug #1 修复：必须在 v-body.innerHTML 渲染完成后再绑定任务复选框点击事件
+  wireViewTasks(e);
+
+  // 文件引用条目：路径行加复制按钮
+  if (e.type === "file" || e.type === "folder") {
+    const codeEls = $("v-body").querySelectorAll("code");
+    for (const c of codeEls) {
+      const txt = c.textContent;
+      if ((/^[A-Za-z]:[\\/]/.test(txt) || txt.startsWith("/")) && txt.length > 4) {
+        const btn = document.createElement("button");
+        btn.className = "link-btn";
+        btn.textContent = "复制路径";
+        btn.addEventListener("click", () => {
+          navigator.clipboard?.writeText(txt).then(() => toast("✓ 路径已复制"), () => toast("复制失败，请手动选择复制"));
+        });
+        c.after(btn);
+      }
+    }
+  }
+  setEditMode(false);
+  showView("detail");
+  appRoot.classList.add("show-detail");
+  appRoot.classList.remove("show-side");
+  await loadBacklinks(e.id, e.title);
+  buildTOC(e.content);
+  } catch (err) {
+    toast(`❌ 打开失败：${err?.message || err}`);
+  }
+}
+
+// ---------------- 编辑器封装 ----------------
+const Editor = {
+  v: null,
+  get value() { return this.v ? this.v.getValue() : ($("e-body")?.value ?? ""); },
+  set value(text) {
+    if (this.v) this.v.setValue(String(text ?? ""));
+    else { const ta = $("e-body"); if (ta) ta.value = String(text ?? ""); }
+  },
+  insert(text) {
+    if (this.v) { this.v.insertValue(String(text), { render: true }); this.v.focus(); }
+    else {
+      const ta = $("e-body");
+      if (!ta) return;
+      const pos = ta.selectionStart ?? ta.value.length;
+      ta.value = ta.value.slice(0, pos) + text + ta.value.slice(pos);
+      ta.focus();
+      ta.setSelectionRange(pos + text.length, pos + text.length);
+      ta.dispatchEvent(new Event("input"));
+    }
+  },
+  focus() { if (this.v) this.v.focus(); else $("e-body")?.focus(); },
+  init() {
+    if (typeof Vditor === "undefined" || !$("vditor-mount")) return;
+    this.v = new Vditor("vditor-mount", {
+      mode: "wysiwyg",
+      value: "",
+      height: "100%",
+      cache: { enable: false },
+      counter: { enable: true },
+      placeholder: "直接开始写，像 Word 一样；工具栏可切换源码模式",
+      toolbar: ["headings", "bold", "italic", "strike", "|", "list", "ordered-list", "check", "|", "quote", "code", "inline-code", "link", "table", "|", "undo", "redo", "|", "edit-mode", "fullscreen"],
+      lang: "zh_CN",
+      after: () => { /* 就绪 */ },
+    });
+  },
+};
+Editor.init();
+
+// ---------------- [[ 双链自动补全 ----------------
+const Wiki = {
+  el: null,
+  items: [],
+  idx: 0,
+  pool: [],
+  async refreshPool() {
+    try {
+      const r = await API.get("/entries?limit=500");
+      if (r.ok) this.pool = r.entries || [];
+    } catch { /* 降级：用当前列表 */ }
+  },
+  open(q) {
+    const src = this.pool.length ? this.pool : state.entries;
+    const ql = String(q || "").toLowerCase();
+    this.items = src
+      .filter((e) => !ql || String(e.title || "").toLowerCase().includes(ql) || String(e.category || "").toLowerCase().includes(ql))
+      .slice(0, 8);
+    if (!this.items.length) return this.close();
+    this.idx = 0;
+    this.render();
+  },
+  render() {
+    if (!this.el) {
+      this.el = document.createElement("div");
+      this.el.className = "wiki-popup";
+      document.body.appendChild(this.el);
+    }
+    this.el.innerHTML = this.items.map((e, i) =>
+      `<button data-i="${i}" class="${i === this.idx ? "cur" : ""}"><span class="wp-icon">${typeIcon(e.type)}</span><span class="wp-title">${escapeHtml(e.title)}</span><span class="wp-cat">${escapeHtml(e.category)}</span></button>`).join("") +
+      `<div class="wp-tip">↑↓ 选择 · Enter 插入 · Esc 取消</div>`;
+    this.el.hidden = false;
+    const pos = caretPos();
+    if (pos) {
+      const w = 280, h = this.el.offsetHeight || 200;
+      this.el.style.left = Math.max(4, Math.min(pos.x, window.innerWidth - w - 8)) + "px";
+      this.el.style.top = (pos.y + 22 + h > window.innerHeight ? Math.max(4, pos.y - h - 4) : pos.y + 22) + "px";
+    }
+    for (const b of this.el.querySelectorAll("button")) {
+      b.addEventListener("mousedown", (ev) => {
+        ev.preventDefault();
+        this.idx = Number(b.dataset.i);
+        this.pick();
+      });
+    }
+  },
+  move(d) {
+    if (!this.isOpen()) return;
+    this.idx = (this.idx + d + this.items.length) % this.items.length;
+    this.render();
+  },
+  pick() {
+    const e = this.items[this.idx];
+    this.close();
+    if (e) replaceWikiPending(`[[${e.title}]]`);
+  },
+  close() {
+    if (this.el) this.el.hidden = true;
+    this.items = [];
+  },
+  isOpen() { return !!this.el && !this.el.hidden; },
+};
+
+function caretPos() {
+  const sel = window.getSelection();
+  if (sel && sel.rangeCount) {
+    const range = sel.getRangeAt(0);
+    const rect = range.getBoundingClientRect();
+    if ((rect.width || rect.height || rect.left) && document.activeElement !== $("e-body")) {
+      return { x: rect.left + window.scrollX, y: rect.bottom + window.scrollY };
+    }
+  }
+  const ta = $("e-body");
+  if (ta && document.activeElement === ta) {
+    const r = ta.getBoundingClientRect();
+    const line = ta.value.slice(0, ta.selectionStart).split("\n").length - 1;
+    return { x: r.left + 12, y: r.top + 8 + line * 22 - ta.scrollTop };
+  }
+  return null;
+}
+
+function replaceWikiPending(text) {
+  const active = document.activeElement;
+  if (active && active.tagName === "TEXTAREA") {
+    const end = active.selectionStart;
+    const m = /\[\[([^\]\n]*)$/.exec(active.value.slice(active.value.lastIndexOf("\n", end - 1) + 1, end));
+    if (m) {
+      active.setRangeText(text, end - m[0].length, end, "end");
+      active.dispatchEvent(new Event("input", { bubbles: true }));
+      return;
+    }
+  }
+  try {
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount) {
+      const range = sel.getRangeAt(0);
+      const node = range.startContainer;
+      const before = (node.textContent || "").slice(0, range.startOffset);
+      const m = /\[\[([^\]\n]*)$/.exec(before);
+      if (m && node.nodeType === 3) {
+        const r2 = document.createRange();
+        r2.setStart(node, range.startOffset - m[0].length);
+        r2.setEnd(node, range.startOffset);
+        sel.removeAllRanges();
+        sel.addRange(r2);
+      }
+    }
+  } catch { /* 选区拿不到就直接插 */ }
+  if (!document.execCommand("insertText", false, text)) Editor.insert(text);
+}
+
+(function wireWiki() {
+  document.addEventListener("keydown", (ev) => {
+    if (Wiki.isOpen()) {
+      if (ev.key === "ArrowDown") { ev.preventDefault(); ev.stopPropagation(); Wiki.move(1); return; }
+      if (ev.key === "ArrowUp") { ev.preventDefault(); ev.stopPropagation(); Wiki.move(-1); return; }
+      if (ev.key === "Enter" && !ev.isComposing) { ev.preventDefault(); ev.stopPropagation(); Wiki.pick(); return; }
+      if (ev.key === "Tab") { ev.preventDefault(); ev.stopPropagation(); Wiki.pick(); return; }
+      if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); Wiki.close(); return; }
+    }
+  }, true);
+  const detect = () => {
+    if (!$("edit") || $("edit").hidden) return Wiki.close();
+    const ta = document.activeElement;
+    let before = "";
+    if (ta && ta.tagName === "TEXTAREA") {
+      before = ta.value.slice(ta.value.lastIndexOf("\n", ta.selectionStart - 1) + 1, ta.selectionStart);
+    } else {
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount) {
+        const r = sel.getRangeAt(0);
+        if (r.collapsed && r.startContainer.nodeType === 3) {
+          before = (r.startContainer.textContent || "").slice(0, r.startOffset);
+        }
+      }
+    }
+    const m = /\[\[([^\]\n]{0,32})$/.exec(before);
+    if (m) Wiki.open(m[1]);
+    else Wiki.close();
+  };
+  document.addEventListener("input", () => setTimeout(detect, 30), true);
+  document.addEventListener("keyup", (ev) => {
+    if (["ArrowLeft", "ArrowRight", "Backspace", "Delete"].includes(ev.key) || ev.key === "[") setTimeout(detect, 30);
+  }, true);
+  document.addEventListener("selectionchange", () => setTimeout(detect, 60));
+})();
+
+function fillEditor(e) {
+  $("e-title").value = e.title || "";
+  $("e-cat").value = state.categories.some((c) => c.name === e.category) ? e.category : "";
+  $("e-tags").value = (e.tags || []).join(", ");
+  Editor.value = e.content || "";
+}
+
+// ---------------- 操作 ----------------
+async function updateEntry() {
+  const body = {
+    id: state.selected,
+    title: $("e-title").value.trim(),
+    content: Editor.value,
+    tags: $("e-tags").value.split(/[,，]/).map((t) => t.trim()).filter(Boolean),
+  };
+  const cat = $("e-cat").value;
+  if (cat) body.category = cat;
+  const r = await API.post("/entry", body);
+  if (!r.ok) return toast(`❌ ${r.error}`);
+  await loadCategories();
+  await loadEntries();
+  await selectEntry(state.selected);
+  toast("✓ 已保存");
+}
+
+// ---------------- 事件绑定 ----------------
+$("mi-new").addEventListener("click", () => { $("side-menu").hidden = true; newEntry(); });
+
+async function newEntry() {
+  const r = await API.post("/entry", { title: "未命名笔记", content: "", category: state.filter.category });
+  if (!r.ok) return toast(`❌ ${r.error}`);
+  await loadCategories();
+  await loadEntries();
+  await selectEntry(r.entry.id);
+  const e = await API.get(`/entry?id=${encodeURIComponent(r.entry.id)}`);
+  if (e.ok) fillEditor(e.entry);
+  setEditMode(true);
+  Wiki.refreshPool();
+  $("e-title").select();
+}
+
+// ---------------- 详情页 ⋯ 菜单：低频操作收进来，头部只留高频 ----------------
+function renderMoreMenu(entry) {
+  $("mi-pin-home").dataset.on = entry.homePinned ? "1" : "";
+  $("mi-pin-home").textContent = entry.homePinned ? "📍 取消首页固定" : "📌 固定到首页";
+  $("mi-pin").dataset.on = entry.pinned ? "1" : "";
+  $("mi-pin").textContent = entry.pinned ? "☆ 取消置顶" : "★ 在列表置顶";
+}
+
+function toggleMoreMenu(v) {
+  $("more-menu").hidden = !v;
+}
+
+$("btn-more").addEventListener("click", (ev) => {
+  ev.stopPropagation();
+  toggleMoreMenu($("more-menu").hidden);
+});
+document.addEventListener("click", (ev) => {
+  if (!$("more-menu")?.hidden && !ev.target.closest(".more-wrap")) toggleMoreMenu(false);
+});
+
+$("mi-pin-home").addEventListener("click", async () => {
+  toggleMoreMenu(false);
+  if (!state.selected) return;
+  const now = !$("mi-pin-home").dataset.on;
+  const r = await API.post("/entry", { id: state.selected, homePinned: now });
+  if (!r.ok) return toast(`❌ ${r.error}`);
+  renderMoreMenu(r.entry);
+  toast(now ? "✓ 已固定到首页" : "✓ 已从首页取消固定");
+});
+
+$("mi-pin").addEventListener("click", async () => {
+  toggleMoreMenu(false);
+  if (!state.selected) return;
+  const now = !$("mi-pin").dataset.on;
+  const r = await API.post("/entry", { id: state.selected, pinned: now });
+  if (!r.ok) return toast(`❌ ${r.error}`);
+  renderMoreMenu(r.entry);
+  toast(now ? "★ 已置顶" : "☆ 已取消置顶");
+  await loadEntries();
+});
+
+// 层1：把一条收藏钉成一张独立卡（同一条只定位同一张；可拖到黑板/工作室页面多张并排）
+$("mi-board").addEventListener("click", async () => {
+  toggleMoreMenu(false);
+  if (!state.selected) return;
+  try {
+    const r = await hana.cards.open("entry", { instanceKey: `e:${state.selected}` });
+    toast(r?.existing ? "已定位到那张卡" : "✓ 已钉成卡片，可拖到黑板或工作室页面");
+  } catch (err) {
+    toast(`❌ 钉卡失败：${err?.message || err}`, 4500);
+  }
+});
+
+// 层2：回到这条收藏所在的对话
+$("v-meta").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("#meta-session");
+  if (!btn || !state.selected) return;
+  const cur = await API.get(`/entry?id=${encodeURIComponent(state.selected)}`);
+  if (!cur.ok) return toast(`❌ ${cur.error}`);
+  const ref = cur.entry.session || {};
+  let sid = ref.sessionId || null;
+  if (!sid && ref.sessionPath) {
+    const res = await API.get(`/session/resolve?path=${encodeURIComponent(ref.sessionPath)}`);
+    sid = res?.session?.sessionId || null;
+  }
+  if (!sid) return toast("这条收藏没有可定位的来源会话", 3200);
+  try {
+    await hana.sessions.focus({ sessionId: sid });
+  } catch (err) {
+    toast(`❌ 跳转失败：${err?.message || err}`, 4200);
+  }
+});
+
+$("mi-copy").addEventListener("click", async () => {
+  toggleMoreMenu(false);
+  if (!state.selected) return;
+  const r = await API.get(`/entry?id=${encodeURIComponent(state.selected)}`);
+  if (!r.ok) return toast(`❌ ${r.error}`);
+  const text = `# ${r.entry.title}\n\n${r.entry.content || ""}`;
+  navigator.clipboard?.writeText(text).then(() => toast("✓ 全文已复制"), () => toast("复制失败，请手动选择复制"));
+});
+
+$("mi-export").addEventListener("click", async () => {
+  toggleMoreMenu(false);
+  if (!state.selected) return;
+  const r = await API.get(`/entry?id=${encodeURIComponent(state.selected)}`);
+  if (!r.ok) return toast(`❌ ${r.error}`);
+  const e = r.entry;
+  const meta = ["---",
+    `id: ${JSON.stringify(e.id)}`,
+    `title: ${JSON.stringify(e.title)}`,
+    `type: ${JSON.stringify(e.type)}`,
+    e.tags?.length ? `tags: ${JSON.stringify(e.tags)}` : "",
+    e.source ? `source: ${JSON.stringify(e.source)}` : "",
+    "---", ""].filter(Boolean).join("\n");
+  const bytes = new TextEncoder().encode(meta + (e.content || ""));
+  let bin = "";
+  const CH = 0x8000;
+  for (let i = 0; i < bytes.length; i += CH) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+  try {
+    await hana.resources.saveFile({ suggestedName: `${String(e.title).slice(0, 40) || e.id}.md`, mimeType: "text/markdown", contentBase64: btoa(bin) });
+    toast("✓ 已导出为 .md 文件");
+  } catch (err) {
+    toast(`保存失败：${err?.message || err}`, 4500);
+  }
+});
+
+$("mi-delete").addEventListener("click", () => {
+  toggleMoreMenu(false);
+  if (!state.selected) return;
+  dialog({
+    title: "删除这条收藏",
+    bodyHtml: `<p>删除后文件会移到库里的 <code>_trash</code> 目录，需要时能手动找回。</p>`,
+    okText: "删除",
+    onOk: async () => {
+      const r = await API.post("/entry/delete", { id: state.selected });
+      if (!r.ok) { toast(`❌ ${r.error}`); return false; }
+      await loadCategories();
+      await loadEntries();
+      await selectEntry(null);
+      toast("✓ 已删除");
+    },
+  });
+});
+
+// ---------------- 侧栏顶栏菜单：低频功能收在这里，不占正文空间 ----------------
+// 侧栏这个按钮现在只是「跳到首页待处理区」的快捷方式：
+// 收件箱和待确认候选已经在首页合成一块了，不再有独立入口。
+$("btn-clip-stage").addEventListener("click", () => { showHome(); });
+$("btn-side-menu").addEventListener("click", (ev) => {
+  ev.stopPropagation();
+  const m = $("side-menu");
+  m.hidden = !m.hidden;
+});
+document.addEventListener("click", (ev) => {
+  const menu = $("side-menu");
+  if (menu && !menu.hidden && !ev.target.closest(".menu-wrap")) menu.hidden = true;
+});
+$("mi-storage").addEventListener("click", () => { $("side-menu").hidden = true; openStorageDialog(); });
+$("mi-backup").addEventListener("click", () => { $("side-menu").hidden = true; openBackupDialog(); });
+$("mi-settings").addEventListener("click", () => { $("side-menu").hidden = true; openAiSettings(); });
+
+$("btn-toggle").addEventListener("click", async () => {
+  if ($("edit").hidden) {
+    const r = await API.get(`/entry?id=${encodeURIComponent(state.selected)}`);
+    if (!r.ok) return toast(`❌ ${r.error}`);
+    fillEditor(r.entry);
+    setEditMode(true);
+    Wiki.refreshPool();
+    Editor.focus();
+  } else {
+    setEditMode(false);
+  }
+});
+
+$("btn-refresh").addEventListener("click", async () => {
+  const r = await API.post("/rescan", {});
+  if (!r.ok) return toast(`❌ ${r.error}`);
+  await loadCategories();
+  await loadEntries();
+  if (state.selected) await selectEntry(state.selected);
+  toast(`✓ 已重新扫描：${r.entries} 条`);
+});
+$("btn-back-side").addEventListener("click", () => appRoot.classList.add("show-side"));
+
+$("btn-new-cat").addEventListener("click", () => {
+  dialog({
+    title: "新建分类",
+    bodyHtml: `<input id="d-name" placeholder="分类名，例如 教资笔记"><input id="d-desc" placeholder="说明（可留空）">`,
+    okText: "创建",
+    onMount: () => $("d-name").focus(),
+    onOk: async () => {
+      const name = $("d-name").value.trim();
+      if (!name) { toast("分类名不能为空"); return false; }
+      const r = await API.post("/categories", { name, description: $("d-desc").value.trim() });
+      if (!r.ok) { toast(`❌ ${r.error}`); return false; }
+      await loadCategories();
+      await selectCategory(r.name);
+      toast(r.created ? "✓ 分类已创建" : "该分类已存在");
+    },
+  });
+});
+
+$("search").addEventListener("input", () => {
+  state.filter.query = $("search").value.trim();
+  clearTimeout($("search").timer);
+  $("search").timer = setTimeout(loadEntries, 180);
+});
+
+$("edit").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  await updateEntry();
+});
+
+$("btn-cancel").addEventListener("click", async () => {
+  if (state.selected) await selectEntry(state.selected);
+});
+
+// ---------------- 存储位置与 OpenHanako AI 设置 ----------------
+// ---------------- 底栏三个入口：存储 / 备份 / 设置 ----------------
+function openStorageDialog() {
+  const cur = state.root || "";
+  dialog({
+    title: "存储位置",
+    bodyHtml:
+      `<p class="muted">当前库的位置：<code>${escapeHtml(cur)}</code></p>` +
+      `<p class="muted" style="margin-top:0">整个库就是一个文件夹，每个分类一个子文件夹，想手动备份直接拷这个文件夹也行。</p>` +
+      `<input id="d-path" placeholder="绝对路径，例如 D:\\我的收藏" value="">` +
+      `<div class="row" style="margin-bottom:6px"><button type="button" id="d-pick">浏览文件夹…</button><span class="grow"></span></div>` +
+      `<label><input type="radio" name="d-mode" value="copy" checked> 把现有内容复制过去</label>` +
+      `<label><input type="radio" name="d-mode" value="switch"> 只换位置，不复制（空库开始）</label>`,
+    okText: "应用",
+    onMount: () => {
+      $("d-path").value = cur;
+      $("d-pick").addEventListener("click", async () => {
+        try {
+          const picked = await hana.resources.pick({ mode: "directory" });
+          const p = picked?.resources?.[0]?.path || picked?.resources?.[0]?.uri;
+          if (p) $("d-path").value = String(p).replace(/^file:\/\//, "");
+          else toast("没有选中文件夹");
+        } catch (err) {
+          toast(`打开选择器失败：${err?.message || err}`, 4000);
+        }
+      });
+    },
+    onOk: async () => {
+      const path = $("d-path").value.trim();
+      if (!path) { toast("请填写路径"); return false; }
+      if (path === cur) { toast("✓ 未改动"); return; }
+      const mode = document.querySelector('input[name="d-mode"]:checked')?.value || "copy";
+      const r = await API.post("/location", { path, mode });
+      if (!r.ok) { toast(`❌ ${r.error}`, 5000); return false; }
+      state.root = r.root;
+      await loadCategories();
+      await selectCategory("");
+      toast(r.copied ? `✓ 已搬家，复制了 ${r.copied} 条` : "✓ 已切换位置", 3500);
+    },
+  });
+}
+
+async function refreshClipStage() {
+  const r = await Promise.resolve().then(() => API.get("/clip/stage")).catch(() => ({ items: [] }));
+  const items = r.items || [];
+  const badge = $("clip-stage-count");
+  if (badge) { badge.textContent = items.length; badge.hidden = !items.length; }
+  return items;
+}
+
+// 首页「待处理」区里的待确认候选。
+// 以前它是侧栏一个独立入口、弹一个单独的对话框，和收件箱明显重复；
+// 现在收件箱和候选合成一个待处理区，这里只负责渲染候选那一截。
+// 空的时候整块不占位。
+async function renderClipStageSlot() {
+  const slot = $("clip-stage-slot");
+  if (!slot) return;
+  const items = await refreshClipStage();
+  const sub = $("inbox-sub");
+  if (sub) sub.textContent = items.length ? `待整理 · ${items.length} 条待确认` : "待整理";
+  if (!items.length) { slot.innerHTML = ""; return; }
+  slot.innerHTML =
+    `<div class="clip-stage-box">` +
+    `<div class="clip-stage-head"><span>⏳ 待确认收藏 <b>${items.length}</b></span>` +
+    `<button class="link-btn" id="clip-stage-open">展开勾选 →</button></div>` +
+    `<ul class="home-list">` + items.slice(0, 4).map((it) =>
+      `<li><b>${escapeHtml(it.title)}</b><small>${escapeHtml(it.preview || "")}</small></li>`).join("") +
+    (items.length > 4 ? `<li class="muted"><small>…还有 ${items.length - 4} 条</small></li>` : "") +
+    `</ul></div>`;
+  const openBtn = $("clip-stage-open");
+  if (openBtn) openBtn.addEventListener("click", () => openClipStageDialog());
+}
+
+async function openClipStageDialog() {
+  const items = await refreshClipStage();
+  dialog({
+    title: `📥 待确认收藏（${items.length}）`,
+    bodyHtml: items.length ? `<div class="clip-stage-list">${items.map((it) => `<label class="clip-stage-item"><input type="checkbox" value="${escapeAttr(it.key)}" checked><span><b>${escapeHtml(it.title)}</b><small>${escapeHtml(it.preview || "")}<br>${escapeHtml(it.from || "对话")} · ${it.chars || 0} 字</small></span></label>`).join("")}</div><p class="muted">确认后 AI 会生成标题和标签，并收入「收件箱」。</p>` : `<p class="muted">暂时没有待确认内容。点击对话消息下方的「收入念念收藏夹」后，候选会出现在这里。</p>`,
+    okText: "AI 整理并收入收件箱",
+    onOk: async () => {
+      const keys = [...$("m-body").querySelectorAll(".clip-stage-item input:checked")].map((x) => x.value);
+      if (!keys.length) { toast("先勾选至少一条候选"); return false; }
+      const res = await API.post("/clip/commit", { keys, category: "收件箱", auto: true });
+      if (!res.ok) { toast(`❌ ${res.error}`, 4500); return false; }
+      await refreshClipStage(); await loadCategories(); await loadEntries();
+      toast(`✓ 已收藏 ${res.saved} 条到收件箱`);
+    },
+    onMount: () => {
+      if (!items.length) $("m-ok").disabled = true;
+      else $("m-ok").disabled = false;
+    },
+  });
+}
+
+async function openBackupDialog() {
+  const stat = await Promise.resolve().then(() => API.get("/status")).catch(() => ({}));
+  const cloud = await Promise.resolve().then(() => API.get("/cloud/config")).catch(() => ({ config: null, spawnEnabled: false }));
+  const cfg = cloud.config || { proto: "webdav", url: "", region: "", user: "", pass: "", enabled: false };
+  dialog({
+    title: "备份与恢复",
+    bodyHtml:
+      `<div class="backup-row">` +
+      `<button type="button" id="btn-backup-export" class="primary">⬇ 导出备份</button>` +
+      `<span class="muted">打包全部 ${(stat?.stats?.entries ?? state.categories.reduce((s, c) => s + c.count, 0))} 条收藏与图片，存成一个 .zip 到你选的位置</span>` +
+      `</div>` +
+      `<div class="backup-row">` +
+      `<button type="button" id="btn-backup-import">⬆ 从备份恢复</button>` +
+      `<span class="muted">选一个本应用导出的 .zip；恢复前会先给你看包里有什么</span>` +
+      `</div>` +
+      `<div class="backup-row">` +
+      `<button type="button" id="btn-backup-snapshot">🗄 存一份到库内 _backup</button>` +
+      `<span class="muted">不用选位置，直接落在库文件夹里，适合定期快照</span>` +
+      `</div>` +
+      `<details class="cloud-box"><summary>☁ WebDAV / S3 云端备份</summary>` +
+      `<p class="muted">通过系统 curl 上传 zip。密码只存本机 App 设置，不写入收藏库备份。</p>` +
+      `<label class="cloud-enable"><input id="cloud-enabled" type="checkbox"${cfg.enabled ? " checked" : ""}> 存快照时自动上传</label>` +
+      `<select id="cloud-proto"><option value="webdav"${cfg.proto === "webdav" ? " selected" : ""}>WebDAV（坚果云 / NAS）</option><option value="s3"${cfg.proto === "s3" ? " selected" : ""}>S3 兼容（S3 / MinIO / R2）</option></select>` +
+      `<input id="cloud-url" placeholder="服务地址（含桶或远程目录）" value="${escapeAttr(cfg.url || "")}">` +
+      `<input id="cloud-region" placeholder="S3 区域，如 ap-east-1" value="${escapeAttr(cfg.region || "")}">` +
+      `<input id="cloud-user" placeholder="账号 / Access Key" value="${escapeAttr(cfg.user || "")}">` +
+      `<input id="cloud-pass" type="password" placeholder="密码 / Secret Key（留空保持原值）" value="">` +
+      `<div class="backup-row"><button type="button" id="cloud-save">保存云备份设置</button><button type="button" id="cloud-upload" class="primary">立即上传</button><button type="button" id="cloud-download">下载并恢复…</button></div>` +
+      `<p class="muted">${cloud.spawnEnabled ? "" : "⚠ 需要在 Hana「设置 → 安全 → 应用能力」授予 app/process.spawn，并重启 App。"}</p>` +
+      `</details>` +
+      `<p class="muted" style="margin-top:10px">云端恢复会先下载并预览，确认后才整体替换当前库。</p>`,
+    okText: "关闭",
+    onOk: () => {},
+    onMount: () => {
+      $("btn-backup-export").addEventListener("click", () => exportBackup());
+      $("btn-backup-import").addEventListener("click", () => importBackup());
+      $("btn-backup-snapshot").addEventListener("click", async () => {
+        const r = await API.post("/backup/snapshot", {});
+        if (!r.ok) return toast(`❌ ${r.error}`, 5000);
+        toast(`✓ 已存快照：${(r.bytes / 1024).toFixed(0)}KB → ${r.path}`, 6000);
+      });
+      $("cloud-save").addEventListener("click", async () => {
+        const oldPass = cfg.pass || "";
+        const passInput = $("cloud-pass").value;
+        const r = await API.post("/cloud/config", {
+          enabled: $("cloud-enabled").checked,
+          proto: $("cloud-proto").value,
+          url: $("cloud-url").value,
+          region: $("cloud-region").value,
+          user: $("cloud-user").value,
+          pass: passInput || (oldPass ? "••••••" : ""),
+        });
+        if (!r.ok) return toast(`❌ ${r.error}`, 4500);
+        cfg.pass = oldPass || passInput;
+        toast("✓ 云备份设置已保存");
+      });
+      $("cloud-upload").addEventListener("click", async () => {
+        const save = await API.post("/cloud/config", {
+          enabled: $("cloud-enabled").checked, proto: $("cloud-proto").value,
+          url: $("cloud-url").value, region: $("cloud-region").value,
+          user: $("cloud-user").value, pass: $("cloud-pass").value || (cfg.pass ? "••••••" : ""),
+        });
+        if (!save.ok) return toast(`❌ ${save.error}`, 4500);
+        const r = await API.post("/cloud/upload", {});
+        toast(r.ok ? `✓ 已上传 ${r.file}（${(r.bytes / 1024).toFixed(0)} KB）` : `❌ ${r.error}`, 5000);
+      });
+      $("cloud-download").addEventListener("click", async () => {
+        const save = await API.post("/cloud/config", {
+          enabled: $("cloud-enabled").checked, proto: $("cloud-proto").value,
+          url: $("cloud-url").value, region: $("cloud-region").value,
+          user: $("cloud-user").value, pass: $("cloud-pass").value || (cfg.pass ? "••••••" : ""),
+        });
+        if (!save.ok) return toast(`❌ ${save.error}`, 4500);
+        const r = await API.post("/cloud/download", {});
+        if (!r.ok) return toast(`❌ ${r.error}`, 5000);
+        const pv = await API.post("/backup/import/preview", { contentBase64: r.contentBase64 });
+        if (!pv.ok) return toast(`❌ 云端备份无效：${pv.error}`, 5000);
+        showBackupImportPreview(r.contentBase64, pv, "云端备份");
+      });
+    },
+  });
+}
+
+async function openAiSettings() {
+  const aiRes = await API.get("/ai/status").catch(() => ({ ok: false }));
+  const models = aiRes?.models || [];
+  const aiSettings = aiRes?.settings || { modelPref: "auto", proactive: "high" };
+  const modelOpts = [`<option value="auto"${aiSettings.modelPref === "auto" ? " selected" : ""}>✦ 自动用 OpenHanako 默认模型</option>`]
+    .concat(models.map((m) => {
+      const val = `${m.provider}::${m.id}`;
+      return `<option value="${escapeAttr(val)}"${aiSettings.modelPref === val ? " selected" : ""}>${escapeHtml(m.provider)} / ${escapeHtml(m.name)}</option>`;
+    })).join("");
+  dialog({
+    title: "AI 设置",
+    bodyHtml:
+      `<p style="font-weight:600;margin-bottom:4px">✦ 模型供应商</p>` +
+      `<select data-role="ai-model" style="width:100%;margin-bottom:10px">${modelOpts}</select>` +
+      `<p style="font-weight:600;margin-bottom:4px">💬 对话主动感知</p>` +
+      `<select data-role="ai-proactive" style="width:100%">` +
+      `<option value="high"${aiSettings.proactive === "high" ? " selected" : ""}>高：自动召回收藏 + 发现链接/干货时提醒入库</option>` +
+      `<option value="normal"${aiSettings.proactive === "normal" ? " selected" : ""}>标准：仅对话前检索相关收藏作背景</option>` +
+      `<option value="off"${aiSettings.proactive === "off" ? " selected" : ""}>关：仅手动收藏</option>` +
+      `</select>` +
+      `<p class="muted" style="margin-top:10px">“高”会把库里的标题与摘要注入对话上下文（收藏内容若含敌对文本有提示注入风险），介意请选“标准”。</p>`,
+    okText: "保存",
+    onOk: async () => {
+      const modelSel = $("m-body").querySelector('[data-role="ai-model"]');
+      const proactiveSel = $("m-body").querySelector('[data-role="ai-proactive"]');
+      await API.post("/ai/settings", {
+        modelPref: modelSel?.value || "auto",
+        proactive: proactiveSel?.value || "high",
+      }).catch(() => {});
+      toast("✓ 设置已保存");
+    },
+  });
+}
+
+// ---------------- 备份与恢复 ----------------
+async function exportBackup() {
+  toast("正在打包整个库…", 3000);
+  let buf;
+  try {
+    const res = await hana.api.fetch("/backup/export");
+    if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || `导出失败（${res.status}）`);
+    buf = new Uint8Array(await res.arrayBuffer());
+  } catch (e) {
+    return toast(`❌ ${e?.message || e}`, 4500);
+  }
+  const stamp = new Date().toISOString().slice(0, 10);
+  const name = `念念收藏备份-${stamp}.zip`;
+  const b64 = uintToB64(buf);
+  try {
+    const r = await hana.resources.saveFile({ suggestedName: name, mimeType: "application/zip", contentBase64: b64 });
+    const saved = r?.saved || r?.status === "saved" || r?.ok;
+    if (saved) toast(`✓ 备份已导出：${name}（${(buf.length / 1024).toFixed(0)}KB）`, 4000);
+    else toast(`已生成备份（${(buf.length / 1024).toFixed(0)}KB），保存结果由宿主确认`, 4000);
+  } catch (e) {
+    // 宿主 saveFile 不可用时降级：把包落进库旁的 _backup/ 并告知路径
+    try {
+      const snap = await API.post("/backup/snapshot", {});
+      if (snap.ok) return toast(`⚠ 保存弹窗不可用，已存到库内：${snap.path}`, 6000);
+    } catch { /* 下面统一报错 */ }
+    toast(`❌ 保存失败：${e?.message || e}`, 5000);
+  }
+}
+
+function uintToB64(bytes) {
+  let s = "";
+  const CH = 0x8000;
+  for (let i = 0; i < bytes.length; i += CH) s += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+  return btoa(s);
+}
+
+async function importBackup() {
+  let picked;
+  try {
+    picked = await hana.resources.pick({ mode: "file", accept: ["application/zip", ".zip"] });
+  } catch (e) {
+    return toast(`打不开文件选择器：${e?.message || e}`, 4000);
+  }
+  const ref = picked?.resources?.[0];
+  if (!ref) return toast("没有选择文件");
+  toast("读取备份包…", 2500);
+  let b64 = "";
+  try {
+    const rd = await hana.resources.read({ resource: ref });
+    const raw = rd?.contentBase64 || rd?.base64 || rd?.data;
+    if (raw) b64 = raw;
+    else if (typeof rd?.text === "string") {
+      // 二进制读不出文本时给明确提示
+      throw new Error("只读到了文本，请用本应用导出的 .zip 备份包");
+    } else throw new Error("读不到文件内容");
+  } catch (e) {
+    return toast(`❌ 读文件失败：${e?.message || e}`, 5000);
+  }
+  const pv = await API.post("/backup/import/preview", { contentBase64: b64 });
+  if (!pv.ok) return toast(`❌ ${pv.error}`, 5000);
+  showBackupImportPreview(b64, pv, "备份");
+}
+
+function showBackupImportPreview(b64, pv, sourceLabel) {
+  dialog({
+    title: `确认恢复${sourceLabel}`, 
+    bodyHtml:
+      `<p>备份包里：</p>` +
+      `<ul style="margin:4px 0 10px 18px;padding:0">` +
+      `<li>分类 <strong>${pv.categories}</strong> 个：${escapeHtml((pv.categoriesList || []).join("、").slice(0, 120))}</li>` +
+      `<li>条目 <strong>${pv.entries}</strong> 条${pv.assets ? `，附带图片/资源 ${pv.assets} 个` : ""}</li>` +
+      `</ul>` +
+      (() => {
+        const nowCount = state.categories.reduce((s, c) => s + c.count, 0);
+        return `<p style="color:var(--c-danger)">恢复会<strong>整体替换</strong>当前库（备份 ${pv.entries} 条 vs 现在 ${nowCount} 条）。建议先导出一份当前备份。</p>`;
+      })(),
+    okText: "确认恢复",
+    onOk: async () => {
+      const r = await API.post("/backup/import", { contentBase64: b64 });
+      if (!r.ok) { toast(`❌ ${r.error}`, 5000); return false; }
+      toast(`✓ 已恢复：${r.entries} 条 / ${r.categories} 个分类`, 4000);
+      await loadStatus();
+      await loadCategories();
+      await selectCategory("");
+    },
+  });
+}
+
+// ---------------- ✨ AI 能力交互：单篇分析、编辑填充、收件箱整理、快速切换与问答 ----------------
+
+// 1. 详情页「✨ AI 助手」：分析当前笔记并一键应用摘要/分类/标签/待办/双链
+$("btn-ai-entry")?.addEventListener("click", async () => {
+  if (!state.selected) return;
+  const r = await API.get(`/entry?id=${encodeURIComponent(state.selected)}`);
+  if (!r.ok) return toast(`❌ ${r.error}`);
+  const e = r.entry;
+  toast("✨ 正在调用 AI 分析笔记…", 4000);
+  const res = await API.post("/ai/analyze", { title: e.title, content: e.content });
+  if (!res.ok) return toast(`❌ ${res.error}`);
+
+  const mergedTags = [...new Set([...(e.tags || []), ...(res.tags || [])])];
+  dialog({
+    title: `✨ AI 笔记助手 — 《${e.title}》`,
+    bodyHtml:
+      `<div class="ai-via">驱动引擎：${escapeHtml(res.via || "OpenHanako AI")}${res.warning ? `（${escapeHtml(res.warning)}）` : ""}</div>` +
+      `<div class="ai-box">` +
+      `<p><strong>📌 核心摘要：</strong>${escapeHtml(res.summary || "无")}</p>` +
+      `<p><strong>🗂 建议分类：</strong>${escapeHtml(res.category)}　<strong>🏷 建议标签：</strong>${mergedTags.map((t) => `#${escapeHtml(t)}`).join(" ")}</p>` +
+      (res.todos?.length ? `<p><strong>☑ 识别到的待办：</strong><br>${res.todos.map((t) => `• ${escapeHtml(t)}`).join("<br>")}</p>` : "") +
+      (res.related?.length ? `<p><strong>🔗 关联库内笔记：</strong>${res.related.map((t) => `[[${escapeHtml(t)}]]`).join("、")}</p>` : "") +
+      `</div>` +
+      `<label><input type="checkbox" data-ai-opt="tags" checked> 应用推荐分类（${escapeHtml(res.category)}）与合并标签</label>` +
+      `<label><input type="checkbox" data-ai-opt="summary" checked> 在正文开头插入 AI 核心摘要引用块</label>` +
+      (res.todos?.length ? `<label><input type="checkbox" data-ai-opt="todos" checked> 在文末追加提取出的 ${res.todos.length} 项待办任务</label>` : "") +
+      (res.related?.length ? `<label><input type="checkbox" data-ai-opt="related" checked> 在文末追加关联笔记双向链接</label>` : ""),
+    okText: "一键应用所选",
+    onOk: async () => {
+      const box = $("m-body");
+      const useTags = box.querySelector('[data-ai-opt="tags"]')?.checked;
+      const useSummary = box.querySelector('[data-ai-opt="summary"]')?.checked;
+      const useTodos = box.querySelector('[data-ai-opt="todos"]')?.checked;
+      const useRelated = box.querySelector('[data-ai-opt="related"]')?.checked;
+
+      let nextContent = e.content || "";
+      if (useSummary && res.summary && !nextContent.includes("> **✨ AI 摘要**")) {
+        nextContent = `> **✨ AI 摘要**：${res.summary}\n\n` + nextContent;
+      }
+      if (useTodos && res.todos?.length) {
+        nextContent = nextContent.replace(/\s*$/, "") + `\n\n## AI 提取待办\n` + res.todos.map((t) => `- [ ] ${t}`).join("\n");
+      }
+      if (useRelated && res.related?.length) {
+        nextContent = nextContent.replace(/\s*$/, "") + `\n\n**关联笔记**：` + res.related.map((t) => `[[${t}]]`).join(" · ");
+      }
+      const patch = { id: e.id, content: nextContent };
+      if (useTags) {
+        if (res.category) patch.category = res.category;
+        patch.tags = mergedTags;
+      }
+      const u = await API.post("/entry", patch);
+      if (!u.ok) { toast(`❌ 写入失败：${u.error}`); return false; }
+      await loadCategories();
+      await loadEntries();
+      await selectEntry(e.id);
+      toast("✨ 已应用 AI 整理结果");
+    },
+  });
+});
+
+// 2. 编辑态「✨ AI 智能填充」：根据当前草稿自动补全标题、分类、标签
+$("btn-ai-edit")?.addEventListener("click", async () => {
+  const curTitle = $("e-title").value.trim();
+  const curBody = Editor.value;
+  if (!curBody.trim() && !curTitle) return toast("请先输入一些正文内容");
+  toast("✨ 正在分析草稿…", 3000);
+  const res = await API.post("/ai/analyze", { title: curTitle === "未命名笔记" ? "" : curTitle, content: curBody });
+  if (!res.ok) return toast(`❌ ${res.error}`);
+  const existingTags = $("e-tags").value.split(/[,，]/).map((t) => t.trim()).filter(Boolean);
+  const merged = [...new Set([...existingTags, ...(res.tags || [])])];
+  // 先把 AI 要改什么摆出来再动手：改字段是用户看不见的动作，不该一点就静悄悄生效。
+  dialog({
+    title: "✨ AI 智能填充",
+    bodyHtml:
+      `<div class="ai-via">驱动引擎：${escapeHtml(res.via || "OpenHanako AI")}</div>` +
+      `<p><strong>它会改你草稿里的这几处：</strong></p>` +
+      `<ul style="margin:4px 0 8px 18px;padding:0;font-size:13px">` +
+      (res.title && res.title !== curTitle ? `<li>标题 → <strong>${escapeHtml(res.title)}</strong></li>` : "") +
+      (res.category ? `<li>分类 → <strong>${escapeHtml(res.category)}</strong>${state.categories.some((c) => c.name === res.category) ? "" : " <span class='muted'>（库里没这个分类，保存时会新建）</span>"}</li>` : "") +
+      (merged.length ? `<li>标签 → <strong>${merged.map((t) => `#${escapeHtml(t)}`).join(" ")}</strong>${existingTags.length ? " <span class='muted'>（合并你原有的）</span>" : ""}</li>` : "") +
+      `</ul>` +
+      `<p class="muted" style="font-size:12px">正文不会被改。填错了可以手动改，或取消不填。</p>`,
+    okText: "应用",
+    onOk: () => {
+      if (res.title && !$("e-title").value.trim()) $("e-title").value = res.title;
+      if (res.category && state.categories.some((c) => c.name === res.category)) $("e-cat").value = res.category;
+      $("e-tags").value = merged.join(", ");
+      toast(`✨ 已填充标题/分类/标签（${res.via || "AI"}）`);
+    },
+  });
+});
+
+// 3. 收件箱「✨ AI 整理收件箱」
+// AI 整理：分析一个分类下的条目，给出分类/标签建议，勾选后批量归位。
+// catName 传空或不传 = 收件箱（历史行为）；侧栏按钮删了以后，
+// 入口改到右键菜单 + 收件箱行上的小按钮。
+async function organizeInboxWithAI(catName = "") {
+  const label = catName || "收件箱";
+  toast(`✨ 正在分析${label}条目…`, 4000);
+  const res = await API.post("/ai/organize-inbox", catName ? { category: catName } : {});
+  if (!res.ok) return toast(`❌ ${res.error}`);
+  const list = res.suggestions || [];
+  if (!list.length) return toast(`📭 ${label}目前是空的`);
+
+  dialog({
+    title: `✨ AI 整理${label}（共 ${list.length} 条）`,
+    bodyHtml:
+      `<div class="ai-via">驱动引擎：${escapeHtml(res.via || "OpenHanako AI")}</div>` +
+      `<div class="ai-box">` +
+      list.map((s) =>
+        `<div style="padding:6px 0;border-bottom:1px dashed var(--c-border)">` +
+        `<label style="display:flex;gap:6px;align-items:baseline"><input type="checkbox" data-org-id="${escapeAttr(s.id)}" checked>` +
+        `<span><strong>${escapeHtml(s.title)}</strong> → <span class="tag">${escapeHtml(s.category)}</span> ` +
+        `${(s.tags || []).map((t) => `<span class="muted">#${escapeHtml(t)}</span>`).join(" ")}</span></label>` +
+        `<div class="muted" style="font-size:11px;padding-left:20px">${escapeHtml(s.reason || "")}</div>` +
+        `</div>`
+      ).join("") +
+      `</div>`,
+    okText: "一键执行归位",
+    onOk: async () => {
+      const checkedIds = new Set(
+        [...$("m-body").querySelectorAll("input[data-org-id]:checked")].map((el) => el.dataset.orgId)
+      );
+      let okCount = 0;
+      for (const s of list) {
+        if (!checkedIds.has(s.id)) continue;
+        const u = await API.post("/entry", { id: s.id, category: s.category, tags: s.tags });
+        if (u.ok) okCount++;
+      }
+      await loadCategories();
+      await loadEntries();
+      toast(`✨ 已自动归位整理 ${okCount} 条笔记`);
+    },
+  });
+}
+
+// ---- 收件箱动作：首页待处理区和卡片墙顶各有一份入口，逻辑共用 ----------
+// 收件箱的卡片铺开就是 openWall("category","收件箱")，
+// 但用户经常找不到入口，所以在两处都摆按钮。
+function inboxWall() { openWall("category", "收件箱"); }
+
+function inboxAI() { organizeInboxWithAI("收件箱"); }
+
+async function inboxClear() {
+  // 两步确认：先说明会先删条目，再说明回收站也会一起清。
+  // 删其他分类时内容会回到收件箱，不清的话收件箱就成了永远清不掉的仓库。
+  const inbox = state.categories.find((c) => c.name === "收件箱");
+  const cnt = inbox?.count || 0;
+  if (!cnt) return toast("收件箱已经是空的");
+  const ok1 = await confirmBox("清空收件箱？",
+    `收件箱里的 ${cnt} 条收藏会被删除。删除后会先移到库内 _trash 目录，这一步还能捞回来。`);
+  if (!ok1) return;
+
+  const r = await API.get(`/entries?category=${encodeURIComponent("收件箱")}&limit=500`);
+  if (!r.ok) return toast(`❌ ${r.error}`);
+  const ids = (r.entries || []).map((e) => e.id);
+  if (!ids.length) return toast("收件箱已经是空的");
+  const b = await API.post("/entries/batch", { op: "delete", ids });
+  if (!b.ok) return toast(`❌ ${b.error}`);
+
+  // 问一句要不要连回收站一起清。用户原话：「清空了就不再存在里面了」
+  const ok2 = await confirmBox("顺便清空回收站？",
+    `刚刚删的 ${b.done} 条现在在库内 _trash 目录。清空后就无法恢复了；不清的话以后还能从备份里找回来。`);
+  if (ok2) {
+    const p = await API.post("/trash/purge", {});
+    if (!p.ok) return toast(`⚠ 已删除 ${b.done} 条，但回收站清空失败：${p.error}`);
+    toast(`✓ 已清空收件箱并彻底删除 ${p.purged} 条`);
+  } else {
+    toast(`✓ 已清空收件箱（${b.done} 条移入回收站）`);
+  }
+  await loadCategories();
+  await loadEntries();
+  await loadHome();
+  // 如果当前正停留在收件箱的墙上，把墙也刷一遍
+  if (!$("wall").hidden) openWall(wallKind, wallValue);
+}
+
+// 首页那三个按钮
+$("btn-inbox-wall").addEventListener("click", inboxWall);
+$("btn-inbox-ai").addEventListener("click", inboxAI);
+$("btn-inbox-clear").addEventListener("click", inboxClear);
+
+// 卡片墙顶那两个（铺开卡片在墙里没意义，墙上已经有卡片了）
+$("btn-wall-inbox-ai").addEventListener("click", inboxAI);
+$("btn-wall-inbox-clear").addEventListener("click", inboxClear);
+
+// 4. 快速切换器与 AI 知识库问答（Ctrl+K / Ctrl+O）
+async function openQuickSwitcher(initialAskMode = false) {
+  const r = await API.get("/entries?limit=300");
+  const pool = r.ok ? (r.entries || []) : state.entries;
+  dialog({
+    title: "✨ 快速跳转与 AI 知识库问答",
+    bodyHtml:
+      `<div class="row" style="gap:6px;margin-bottom:6px">` +
+      `<input data-role="qs-input" placeholder="输入关键词秒跳笔记，或输入问题点右侧「问 AI」…" style="margin:0;flex:1">` +
+      `<button type="button" class="ai-pill small" data-role="qs-ask-btn">✨ 问 AI</button>` +
+      `</div>` +
+      `<div data-role="qs-answer" class="ai-box" hidden></div>` +
+      `<ul class="qs-list" data-role="qs-list"></ul>`,
+    okText: "关闭",
+    onMount: () => {
+      const box = $("m-body");
+      const inp = box.querySelector('[data-role="qs-input"]');
+      const askBtn = box.querySelector('[data-role="qs-ask-btn"]');
+      const ansBox = box.querySelector('[data-role="qs-answer"]');
+      const listEl = box.querySelector('[data-role="qs-list"]');
+
+      const renderList = () => {
+        const q = inp.value.trim().toLowerCase();
+        const hits = pool.filter((e) =>
+          !q ||
+          String(e.title || "").toLowerCase().includes(q) ||
+          String(e.category || "").toLowerCase().includes(q) ||
+          (e.tags || []).some((t) => t.toLowerCase().includes(q)) ||
+          String(e.snippet || "").toLowerCase().includes(q)
+        ).slice(0, 15);
+        listEl.innerHTML = hits.length
+          ? hits.map((e, i) =>
+              `<li data-qid="${escapeAttr(e.id)}" class="${i === 0 ? "active" : ""}">` +
+              `<span>${typeIcon(e.type)} <strong>${escapeHtml(e.title)}</strong></span>` +
+              `<span class="muted">${escapeHtml(e.category)}</span></li>`
+            ).join("")
+          : `<li class="muted">无直接匹配笔记，可点右上角「✨ 问 AI」检索全库解答</li>`;
+        for (const li of listEl.querySelectorAll("li[data-qid]")) {
+          li.addEventListener("click", async () => {
+            show($("modal"), false);
+            showListView();
+            await selectEntry(li.dataset.qid);
+          });
+        }
+      };
+
+      const runAsk = async () => {
+        const q = inp.value.trim();
+        if (!q) return toast("请先输入你的问题");
+        ansBox.hidden = false;
+        ansBox.innerHTML = `<span class="muted">✨ 正在检索收藏夹并调用 OpenHanako 模型思考…</span>`;
+        const res = await API.post("/ai/ask", { question: q });
+        if (!res.ok) {
+          ansBox.innerHTML = `<span style="color:var(--c-danger)">❌ ${escapeHtml(res.error)}</span>`;
+          return;
+        }
+        ansBox.innerHTML =
+          `<div class="ai-via">回答引擎：${escapeHtml(res.via || "AI")}</div>` +
+          `<div class="md">${renderMarkdown(res.answer)}</div>`;
+        for (const a of ansBox.querySelectorAll("a[data-wikilink]")) {
+          a.addEventListener("click", () => { show($("modal"), false); });
+        }
+      };
+
+      inp.addEventListener("input", renderList);
+      inp.addEventListener("keydown", async (ev) => {
+        if (ev.key === "Enter" && !ev.isComposing) {
+          ev.preventDefault();
+          if (ev.shiftKey || initialAskMode) {
+            await runAsk();
+          } else {
+            const first = listEl.querySelector("li[data-qid]");
+            if (first) first.click();
+            else await runAsk();
+          }
+        }
+      });
+      askBtn.addEventListener("click", runAsk);
+      renderList();
+      inp.focus();
+    },
+  });
+}
+
+$("btn-quick-ai")?.addEventListener("click", () => openQuickSwitcher(false));
+$("btn-home-ai-ask")?.addEventListener("click", () => openQuickSwitcher(true));
+
+// 全局快捷键（统一分层，绝不打架）：
+// 1. Ctrl/Cmd + S：编辑态下立即保存
+// 2. Ctrl/Cmd + K 或 Ctrl/Cmd + O：打开快速切换与 AI 问答
+// 3. Escape：优先关 Wiki 补全 -> 关弹窗 -> 退出编辑态
+window.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+    if ($("edit") && !$("edit").hidden) {
+      e.preventDefault();
+      updateEntry();
+    }
+    return;
+  }
+  if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === "k" || e.key.toLowerCase() === "o")) {
+    e.preventDefault();
+    openQuickSwitcher(false);
+    return;
+  }
+  if (e.key === "Escape") {
+    if (Wiki.isOpen()) { Wiki.close(); return; }
+    if ($("modal") && !$("modal").hidden) { $("m-cancel").click(); return; }
+    if (clearWallPicked()) return;
+    if ($("edit") && !$("edit").hidden) { setEditMode(false); }
+  }
+});
+
+// ---------------- 首页总览 ----------------
+
+// ---- 视图切换的唯一入口 ------------------------------------------------
+// 右侧主区有三个互斥的 section：home（总览）/ wall（卡片墙）/ detail（详情）。
+// 以前每个函数只管自己显隐，结果点树上收藏时 wall 还开着，
+// 两个 section 同时显示，布局塌到左下。现在一律走 showView(name)：
+// 它先把三个全关掉，再只开点名的那一个。
+// 注意：edit（编辑器）不是这一层的，它在 detail 内部，由 setEditMode 管。
+const VIEWS = ["home", "wall", "detail"];
+function showView(name) {
+  for (const v of VIEWS) show($(v), v === name);
+}
+
+function showHome() {
+  showView("home");
+  show($("detail-hint"), false);
+  state.selected = null;
+  setActive($("btn-home"), true);
+  loadHome();
+  fitHomeToViewport();
+}
+
+function showListView() {
+  setActive($("btn-home"), false);
+  if (!state.selected) showView("detail");
+}
+
+// ---------------- 分栏把手：拖动改宽度，记在 localStorage ----------------
+// 拖过之后下次打开还是你习惯的宽度；双击把手恢复默认。
+(function wireSplitter() {
+  const bar = $("splitter");
+  const root = $("app");
+  if (!bar || !root) return;
+  const KEY = "nv.paneLeft";
+  const DEF = 420, MIN = 280, MAX = 720;
+  const read = () => Math.min(MAX, Math.max(MIN, Number(localStorage.getItem(KEY)) || DEF));
+  const apply = (px, save) => {
+    const w = Math.min(MAX, Math.max(MIN, Math.round(px)));
+    root.style.setProperty("--pane-left", `${w}px`);
+    if (save) localStorage.setItem(KEY, String(w));
+    return w;
+  };
+  apply(read(), false);
+
+  let dragging = false;
+  bar.addEventListener("mousedown", (ev) => {
+    ev.preventDefault();
+    dragging = true;
+    bar.classList.add("dragging");
+    document.body.classList.add("resizing");
+  });
+  const current = () => {
+    const raw = getComputedStyle(root).getPropertyValue("--pane-left").trim();
+    const n = parseFloat(raw);
+    return Number.isFinite(n) ? n : DEF;
+  };
+  window.addEventListener("mousemove", (ev) => { if (dragging) apply(ev.clientX - root.getBoundingClientRect().left, false); });
+  window.addEventListener("mouseup", () => {
+    if (!dragging) return;
+    dragging = false;
+    bar.classList.remove("dragging");
+    document.body.classList.remove("resizing");
+    apply(current(), true);
+  });
+  bar.addEventListener("dblclick", () => { localStorage.removeItem(KEY); apply(DEF, false); });
+  // 键盘也能调，不只靠鼠标
+  bar.addEventListener("keydown", (ev) => {
+    const step = ev.shiftKey ? 40 : 12;
+    if (ev.key === "ArrowLeft") { ev.preventDefault(); apply(read() - step, true); }
+    if (ev.key === "ArrowRight") { ev.preventDefault(); apply(read() + step, true); }
+  });
+})();
+
+async function loadHome() {
+  const r = await API.get("/home");
+  if (!r.ok) return toast(`❌ ${r.error}`);
+  const { todos = [], hiddenTodos = [], recent = [], homePinned = [], inbox = [], tree = [], tags = [], categories = [] } = r;
+  const openCount = todos.reduce((s, g) => s + g.open, 0);
+  const total = categories.reduce((s, c) => s + (c.count || 0), 0);
+  $("home-stats").textContent = `${total} 条收藏 · ${todos.length} 篇有待办 · 未完成 ${openCount} 项`;
+  renderHomeEntries("home-inbox", inbox, "收件箱是空的，也没有待确认的收藏。对话里点「📥 收入念念收藏夹」可先挑选内容。");
+  // 收件箱没内容时，铺开/AI 整理/清空三个按钮去了也是空操作，藏起来
+  const inboxCount = inbox.length || state.categories.find((c) => c.name === "收件箱")?.count || 0;
+  show($("inbox-acts"), inboxCount > 0);
+  // 待确认候选拉取失败不能拖垮整个首页：它只是一小块，
+  // 但以前它是 await 链上的一环，一挂后面 todos/pinned/recent 全都不渲染。
+  renderClipStageSlot().catch((err) => console.warn("[nian-vault] 待确认区渲染失败", err));
+  renderHomeTodos(todos, hiddenTodos);
+  renderHomeEntries("home-pinned", homePinned, "还没有固定内容：打开一条笔记，点顶栏的 📌");
+  renderRecentCapped(recent);
+  renderTagCloud(tags);
+  renderCatBars(categories, total);
+}
+
+// 最近打开：默认只显示 8 条，剩下的收在「展开全部」后面，不撑爆容器
+function renderRecentCapped(recent) {
+  const CAP = 8;
+  const box = $("home-recent");
+  const more = $("btn-recent-more");
+  const shown = recent.slice(0, CAP);
+  renderHomeEntries("home-recent", shown, "还没有打开记录", (e) => (e.opened ? String(e.opened).slice(5, 10) : ""));
+  const rest = recent.slice(CAP);
+  more.hidden = rest.length === 0;
+  more.textContent = `展开其余 ${rest.length} 条 →`;
+  more.onclick = () => {
+    renderHomeEntries("home-recent", recent, "还没有打开记录", (e) => (e.opened ? String(e.opened).slice(5, 10) : ""));
+    more.hidden = true;
+  };
+}
+
+// 标签云：字号随数量浮动，点一下直接按标签筛选
+// 卡片墙：点分类标题或点标签，把相关收藏横向铺在右侧空白区。
+// 「上一条/下一条」在同一批结果里跳，不用退回墙；「←」回到总览。
+// 排序按需切，记住上次选的那个。
+let wallList = [];
+let wallIndex = -1;
+let wallKind = "";
+let wallValue = "";
+let wallSort = localStorage.getItem("nv.wallSort") || "updated";
+
+const WALL_SORTS = {
+  updated: (a, b) => String(b.updated || "").localeCompare(String(a.updated || "")),
+  created: (a, b) => String(b.created || b.updated || "").localeCompare(String(a.created || a.updated || "")),
+  title: (a, b) => String(a.title || "").localeCompare(String(b.title || ""), "zh"),
+  pinned: (a, b) => Number(!!b.pinned) - Number(!!a.pinned) || String(b.updated || "").localeCompare(String(a.updated || "")),
+  // 「常读」按最近一次打开的时间排：库里只记 opened 时间戳，没有次数统计，
+  // 所以叫「常读优先」名不副实，改成最近读过
+  reads: (a, b) => String(b.opened || "").localeCompare(String(a.opened || "")),
+};
+
+// kind: "category" | "tag"；value: 分类名或标签名
+async function openWall(kind, value) {
+  const q = kind === "tag"
+    ? `/entries?tag=${encodeURIComponent(value)}&limit=300`
+    : `/entries?category=${encodeURIComponent(value)}&limit=300`;
+  const r = await API.get(q);
+  if (!r.ok) return toast(`❌ ${r.error}`);
+  wallList = [...(r.entries || [])];
+  if (!wallList.length) {
+    toast(kind === "tag" ? `「#${value}」下还没有收藏` : `「${value}」还是空的`);
+    return;
+  }
+  wallKind = kind;
+  wallValue = value;
+  wallIndex = 0;
+  wallPicked.clear();   // 换分类/标签时上一批勾选作废
+  wallSelectMode = false;
+  renderWall();
+  showWall(true);
+}
+
+function renderWall() {
+  const name = wallKind === "tag" ? `#${wallValue}` : wallValue;
+  const sorter = WALL_SORTS[wallSort] || WALL_SORTS.updated;
+  const list = [...wallList].sort(sorter);
+  // 排序后 index 可能指向别的条目，按 id 记住当前那张
+  const curId = wallList[wallIndex]?.id;
+  wallList = list;
+  wallIndex = Math.max(0, list.findIndex((e) => e.id === curId));
+  $("wall-name").textContent = name;
+  $("wall-count").textContent = `${wallList.length} 条`;
+  // 收件箱专属动作只在看收件箱时露出来
+  show($("wall-inbox-acts"), wallKind === "category" && wallValue === "收件箱");
+  // 多选态：进了多选就只显示勾选框，普通点击变成勾选/取消
+  const multi = wallSelectMode || wallPicked.size > 0;
+  $("wall-cards").innerHTML = wallList.map((e, i) => {
+    const picked = wallPicked.has(e.id);
+    return `<button class="wcard${i === wallIndex ? " active" : ""}${picked ? " picked" : ""}" data-i="${i}" data-id="${e.id}">
+      <span class="wcard-check" data-check="1">${picked ? "✓" : ""}</span>
+      <span class="wcard-type">${icon(TYPE_ICONS[e.type] || "note", 13)}</span>
+      <span class="wcard-body">
+        <span class="wcard-title">${escapeHtml(e.title)}</span>
+        <span class="wcard-snippet">${escapeHtml(e.snippet || e.content || "").slice(0, 90)}</span>
+        <span class="wcard-meta">${wallKind === "tag" ? escapeHtml(e.category) : (e.tags || []).map((t) => `#${escapeHtml(t)}`).join(" ") || escapeHtml(e.category)}${e.parentTitle ? ` ↳ ${escapeHtml(e.parentTitle)}` : ""}</span>
+      </span>
+      ${e.pinned ? '<span class="wcard-pin" title="已置顶">★</span>' : ""}
+    </button>`;
+  }).join("");
+  for (const b of $("wall-cards").querySelectorAll(".wcard")) {
+    b.addEventListener("click", async (ev) => {
+      const id = b.dataset.id;
+      // 多选态：点卡片 = 勾选/取消；Ctrl/Shift 点 = 加入多选
+      // 普通点击（没进多选、也没按修饰键）= 打开详情
+      const wantMulti = wallSelectMode || wallPicked.size > 0 || ev.ctrlKey || ev.metaKey || ev.shiftKey;
+      if (wantMulti) {
+        if (wallPicked.has(id)) wallPicked.delete(id);
+        else wallPicked.add(id);
+        wallIndex = Number(b.dataset.i);
+        renderWall();
+        renderWallBatchBar();
+        return;
+      }
+      wallIndex = Number(b.dataset.i);
+      for (const x of $("wall-cards").querySelectorAll(".wcard")) x.classList.remove("active");
+      b.classList.add("active");
+      showWall(false);
+      // 关墙后紧接着开详情：selectCategory/selectEntry 内部都会
+      // 走 showView，所以这里不用自己开。
+      if (wallKind === "category") await selectCategory(wallValue);
+      else await selectCategory("");
+      await selectEntry(b.dataset.id);
+    });
+  }
+  $("btn-wall-prev").disabled = wallIndex <= 0;
+  $("btn-wall-next").disabled = wallIndex >= wallList.length - 1;
+  $("wall-cards").querySelector(".wcard.active")?.scrollIntoView?.({ block: "nearest" });
+  renderWallBatchBar();
+}
+
+// 多选集合：墙内勾了哪些条目
+let wallPicked = new Set();
+// 多选态：进了多选就显示勾选框（但一张都没勾），由用户自己点
+let wallSelectMode = false;
+
+// 批量操作栏：进了多选态就出现（哪怕一张都没勾），
+// 没进多选时藏起来。全选/取消全选是同一个按钮，文字跟着状态变。
+function renderWallBatchBar() {
+  const bar = $("wall-batch");
+  if (!bar) return;
+  if (!wallSelectMode && !wallPicked.size) { bar.hidden = true; bar.innerHTML = ""; return; }
+  const allPicked = wallList.length > 0 && wallPicked.size === wallList.length;
+  bar.hidden = false;
+  bar.innerHTML =
+    `<span class="batch-n">已选 <b>${wallPicked.size}</b> / ${wallList.length}</span>` +
+    `<button data-op="toggle-all">${allPicked ? "取消全选" : "全选"}</button>` +
+    `<button data-op="move">📦 移动到…</button>` +
+    `<button data-op="tag">🏷 加标签</button>` +
+    `<button data-op="pin">★ 置顶</button>` +
+    `<button data-op="homePin">📌 固定到首页</button>` +
+    `<button data-op="delete" class="danger">🗑 删除</button>` +
+    `<span class="grow"></span>` +
+    `<button data-op="clear">退出多选</button>`;
+  for (const btn of bar.querySelectorAll("button")) {
+    btn.addEventListener("click", () => wallBatch(btn.dataset.op));
+  }
+}
+
+async function wallBatch(op) {
+  if (op === "clear") { wallPicked.clear(); wallSelectMode = false; renderWall(); return; }
+  if (op === "toggle-all") {
+    if (wallPicked.size === wallList.length) wallPicked.clear();
+    else for (const e of wallList) wallPicked.add(e.id);
+    renderWall();
+    return;
+  }
+  const ids = [...wallPicked];
+  if (!ids.length) return toast("先勾选要操作的收藏");
+
+  if (op === "move") {
+    const to = await pickCategory(wallKind === "category" ? wallValue : "");
+    if (!to) return;
+    await runBatch("move", ids, { category: to }, `已移动 ${ids.length} 条到「${to}」`);
+    return;
+  }
+  if (op === "tag") {
+    const raw = await promptText("添加标签", "", "多个标签用逗号分隔");
+    if (!raw) return;
+    const tags = raw.split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+    if (!tags.length) return toast("没解析出标签");
+    await runBatch("tag", ids, { tags }, `已给 ${ids.length} 条加上 ${tags.length} 个标签`);
+    return;
+  }
+  if (op === "delete") {
+    const label = wallKind === "tag" ? `#${wallValue}` : wallValue;
+    const ok = await confirmBox(`删除选中的 ${ids.length} 条收藏？`,
+      `这些是「${label}」下你勾选的条目。删除后会进回收目录，无法直接恢复。`);
+    if (!ok) return;
+    await runBatch("delete", ids, {}, `已删除 ${ids.length} 条`);
+    return;
+  }
+  const verb = op === "pin" ? "置顶" : "固定到首页";
+  await runBatch(op, ids, {}, `已把 ${ids.length} 条${verb}`);
+}
+
+async function runBatch(op, ids, extra, successMsg) {
+  const r = await API.post("/entries/batch", { op, ids, ...extra });
+  if (!r.ok) return toast(`❌ ${r.error}`);
+  // 有失败就如实说，不拿"成功了一部分"糊弄
+  if (r.failed && r.failed.length) {
+    toast(`⚠ ${successMsg}；${r.failed.length} 条失败：${r.failed[0].error}`, 6000);
+  } else {
+    toast(`✓ ${successMsg}`);
+  }
+  wallPicked.clear();
+  wallSelectMode = false;
+  await loadCategories();
+  await loadEntries();
+  // 重新拉这批数据，墙要反映最新状态
+  await openWall(wallKind, wallValue);
+}
+
+function showWall(on) {
+  // 关墙时不自动开首页：墙内点卡片要接着开详情，
+  // 只有「←」按钮那一处才显式回首页。
+  if (on) {
+    showView("wall");
+    setActive($("btn-home"), false);
+  }
+}
+
+function wallStep(delta) {
+  const next = wallIndex + delta;
+  if (next < 0 || next >= wallList.length) return;
+  wallIndex = next;
+  renderWall();
+}
+
+$("btn-wall-back").addEventListener("click", () => { showWall(false); showHome(); });
+$("btn-wall-prev").addEventListener("click", () => wallStep(-1));
+$("btn-wall-next").addEventListener("click", () => wallStep(1));
+$("wall-sort").addEventListener("change", (ev) => {
+  wallSort = ev.target.value;
+  try { localStorage.setItem("nv.wallSort", wallSort); } catch {}
+  renderWall();
+});
+$("wall-sort").value = wallSort;
+
+// 「☑ 多选」按钮：进入多选态（只显示勾选框，不替用户勾任何东西），
+// 再点一次退出。全选/取消全选交给批量栏里的按钮，由用户自己决定。
+$("btn-wall-select").addEventListener("click", () => {
+  if (wallPicked.size) {
+    wallPicked.clear();
+    renderWall();
+    return;
+  }
+  // 进多选态：用一个哨兵让 renderWall 知道该显示勾选框，
+  // 但 wallPicked 仍是空的，一张都没勾
+  wallSelectMode = true;
+  renderWall();
+  toast("多选模式：点卡片勾选，批量栏里可全选");
+});
+
+// Esc 退出多选
+function clearWallPicked() {
+  if (!wallPicked.size && !wallSelectMode) return false;
+  wallPicked.clear();
+  wallSelectMode = false;
+  renderWall();
+  return true;
+}
+
+function renderTagCloud(tags) {
+  const box = $("home-tags");
+  if (!tags.length) {
+    box.innerHTML = `<span class="muted empty-hint">还没有标签。</span>`;
+    return;
+  }
+  const max = Math.max(...tags.map((t) => t.count || 0), 1);
+  const min = Math.min(...tags.map((t) => t.count || 0));
+  box.innerHTML = tags.slice(0, 40).map((t) => {
+    const c = t.count || 0;
+    const w = max === min ? 1 : (c - min) / (max - min);
+    const size = (12 + w * 5).toFixed(1);
+    const weight = w > 0.6 ? 650 : w > 0.3 ? 550 : 450;
+    return `<button class="tag-chip" style="font-size:${size}px;font-weight:${weight}" data-tag="${escapeAttr(t.name)}" title="${c} 条收藏">#${escapeHtml(t.name)}<span class="tag-n">${c}</span></button>`;
+  }).join("");
+  for (const b of box.querySelectorAll(".tag-chip")) {
+    b.addEventListener("click", () => {
+      // 再点一次同一个标签 = 收起
+      const tag = b.dataset.tag;
+      if (!$("wall").hidden && wallKind === "tag" && wallValue === tag) {
+        showWall(false);
+        showHome();
+        return;
+      }
+      state.filter.tag = tag;
+      openWall("tag", tag);
+    });
+  }
+}
+
+// 分类占比：横向条，一眼看出收藏都堆在哪
+function renderCatBars(categories, total) {
+  const box = $("home-catbars");
+  const rows = categories.filter((c) => (c.count || 0) > 0).sort((a, b) => (b.count || 0) - (a.count || 0)).slice(0, 8);
+  if (!rows.length || !total) {
+    box.innerHTML = `<span class="muted empty-hint">还没有收藏。</span>`;
+    return;
+  }
+  const palette = ["nv-c1", "nv-c2", "nv-c3", "nv-c4", "nv-c5", "nv-c6"];
+  box.innerHTML = rows.map((c, i) => {
+    const pct = Math.round(((c.count || 0) / total) * 100);
+    return `<button class="catbar" data-cat="${escapeAttr(c.name)}" title="${c.count} 条 · 点进去看看">` +
+      `<span class="catbar-name">${escapeHtml(c.name)}</span>` +
+      `<span class="catbar-track"><span class="catbar-fill ${palette[i % palette.length]}" style="width:${Math.max(3, pct)}%"></span></span>` +
+      `<span class="catbar-n">${c.count}</span></button>`;
+  }).join("");
+  for (const b of box.querySelectorAll(".catbar")) {
+    b.addEventListener("click", async () => {
+      showListView();
+      await selectCategory(b.dataset.cat);
+    });
+  }
+}
+
+function renderHomeTodos(groups, hidden) {
+  const box = $("home-todos");
+  if (!groups.length && !hidden.length) {
+    box.innerHTML = `<div class="muted empty-hint">还没有待办。在笔记里输 <code>- [ ] 事项</code>（或点详情页「✨ AI 助手」提取待办），就会出现在这里。</div>`;
+    return;
+  }
+  // 只展开第一个还有未完成项的组，其余收起——否则一屏全是待办，别的内容被挤没了
+  const firstOpen = groups.findIndex((g) => g.open > 0);
+  box.innerHTML =
+    groups.map((g, i) =>
+    `<details class="todo-group"${i === firstOpen ? " open" : ""}>
+      <summary>
+        <span class="tg-title">${escapeHtml(g.title)}</span>
+        <span class="tg-cat">${escapeHtml(g.category)}</span>
+        <span class="tg-count">${g.open}/${g.total}</span>
+      </summary>
+      <div class="tg-jump"><button class="link-btn" data-open="${g.id}">打开笔记</button><button class="link-btn" data-hide="${g.id}">不显示此篇</button></div>
+      <ul class="task-list">
+        ${g.todos.map((t) =>
+          `<li><label><input type="checkbox" data-task data-id="${g.id}" data-line="${t.line}"${t.done ? " checked" : ""}><span class="tx${t.done ? " done" : ""}">${escapeHtml(t.text)}</span></label></li>`
+        ).join("")}
+      </ul>
+    </details>`).join("") +
+    (hidden.length
+      ? `<details class="todo-group todo-hidden"><summary><span class="tg-title">已隐藏 ${hidden.length} 篇</span><span class="tg-count">点开可恢复</span></summary>
+         <ul class="task-list">${hidden.map((h) => `<li><button class="link-btn" data-show="${h.id}">恢复</button> ${escapeHtml(h.title)} <span class="muted">(${h.open}/${h.total})</span></li>`).join("")}</ul></details>`
+      : "");
+  for (const cb of box.querySelectorAll("input[data-task]")) {
+    cb.addEventListener("change", async () => {
+      const res = await API.post("/task/toggle", { id: cb.dataset.id, line: Number(cb.dataset.line) });
+      if (!res.ok) { cb.checked = !cb.checked; return toast(`❌ ${res.error}`); }
+      cb.closest("label").querySelector(".tx").classList.toggle("done", cb.checked);
+      const grp = cb.closest(".todo-group");
+      const cnt = grp.querySelector(".tg-count");
+      const left = [...grp.querySelectorAll("input[data-task]")].filter((x) => !x.checked).length;
+      cnt.textContent = `${left}/${grp.querySelectorAll("input[data-task]").length}`;
+      if (cb.checked) toast("✓ 已完成一项");
+    });
+  }
+  for (const b of box.querySelectorAll("[data-open]")) {
+    b.addEventListener("click", async () => { showListView(); await selectCategory(""); await selectEntry(b.dataset.open); });
+  }
+  for (const b of box.querySelectorAll("[data-hide]")) {
+    b.addEventListener("click", async () => {
+      await API.post("/entry/pref", { id: b.dataset.hide, hideTodos: true });
+      toast("✓ 已隐藏，可在首页「已隐藏」区恢复");
+      loadHome();
+    });
+  }
+  for (const b of box.querySelectorAll("[data-show]")) {
+    b.addEventListener("click", async () => {
+      await API.post("/entry/pref", { id: b.dataset.show, hideTodos: false });
+      toast("✓ 已恢复显示");
+      loadHome();
+    });
+  }
+}
+
+function renderHomeEntries(boxId, items, emptyText, extra) {
+  const box = $(boxId);
+  if (!items.length) {
+    box.innerHTML = `<li class="muted empty-hint">${escapeHtml(emptyText)}</li>`;
+    return;
+  }
+  box.innerHTML = items.map((e) =>
+    `<li class="hl" data-id="${e.id}">
+      <span class="hl-t">${escapeHtml(e.title)}</span>
+      <span class="hl-c">${escapeHtml(e.category)}</span>
+      ${extra ? `<span class="hl-d">${escapeHtml(extra(e))}</span>` : ""}
+    </li>`).join("");
+  for (const li of box.querySelectorAll(".hl")) {
+    li.addEventListener("click", async () => { showListView(); await selectCategory(""); await selectEntry(li.dataset.id); });
+  }
+}
+
+$("btn-home").addEventListener("click", showHome);
+
+// 反向链接 + 未链接提及（思源/Obsidian 风格，支持一键把提及转为 [[双链]]）
+async function loadBacklinks(entryId, entryTitle) {
+  const r = await API.get(`/entry/backlinks?id=${encodeURIComponent(entryId)}`);
+  const links = r.backlinks || [];
+  const mentions = r.mentions || [];
+  const panel = $("backlinks");
+  const list = $("bl-list");
+  const count = $("bl-count");
+  if (!links.length && !mentions.length) {
+    show(panel, false);
+    return;
+  }
+  count.textContent = `(${links.length}${mentions.length ? ` + 提及 ${mentions.length}` : ""})`;
+  const linkHtml = links.map((link) =>
+    `<li>🔗 <a href="#" data-id="${escapeAttr(link.id)}">${escapeHtml(link.title)}</a><span class="muted"> — ${escapeHtml(link.category)}</span></li>`
+  ).join("");
+  const mentionHtml = mentions.length
+    ? `<li class="muted" style="margin-top:8px;font-weight:600">💡 提及但未加双链：</li>` +
+      mentions.map((m) =>
+        `<li><a href="#" data-id="${escapeAttr(m.id)}">${escapeHtml(m.title)}</a> <span class="muted">(${escapeHtml(m.category)})：${escapeHtml(m.excerpt)}</span> ` +
+        `<button type="button" class="link-btn" data-link-mention="${escapeAttr(m.id)}" data-target-title="${escapeAttr(entryTitle)}">[🔗 转为双链]</button></li>`
+      ).join("")
+    : "";
+  list.innerHTML = linkHtml + mentionHtml;
+  show(panel, true);
+  for (const a of list.querySelectorAll("a[data-id]")) {
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      selectEntry(a.dataset.id);
+    });
+  }
+  for (const btn of list.querySelectorAll("button[data-link-mention]")) {
+    btn.addEventListener("click", async () => {
+      const res = await API.post("/entry/link-mention", {
+        sourceId: btn.dataset.linkMention,
+        targetTitle: btn.dataset.targetTitle,
+      });
+      if (!res.ok) return toast(`❌ ${res.error}`);
+      toast("✓ 已将该处提及转为双向链接");
+      await loadBacklinks(entryId, entryTitle);
+    });
+  }
+}
+
+// 本页目录改成按需浮层：左侧树负责条目导航，目录只负责本文标题跳转。
+$("btn-toc-toggle").addEventListener("click", () => show($("toc"), $("toc").hidden));
+$("btn-toc-fold").addEventListener("click", () => show($("toc"), false));
+$("btn-toc-unfold").addEventListener("click", () => show($("toc"), true));
+
+function buildTOC(content) {
+  const toc = $("toc");
+  const tocList = $("toc-list");
+  const lines = String(content || "").split("\n");
+  const headings = [];
+  let inFence = false;
+  for (const line of lines) {
+    if (/^\s*(```|~~~)/.test(line)) { inFence = !inFence; continue; }
+    if (inFence) continue;
+    const m = line.match(/^(#{1,6})\s+(.+)$/);
+    if (m) headings.push({ level: m[1].length, text: m[2].trim(), idx: headings.length });
+  }
+  if (!headings.length) {
+    show(toc, false);
+    show($("btn-toc-toggle"), false);
+    show($("btn-toc-unfold"), false);
+    return;
+  }
+  tocList.innerHTML = headings.map((h) =>
+    `<li class="toc-level-${h.level}"><a href="#" data-hidx="${h.idx}">${escapeHtml(h.text)}</a></li>`
+  ).join("");
+  show(toc, false);
+  show($("btn-toc-toggle"), true);
+  for (const a of tocList.querySelectorAll("a")) {
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      const target = $("v-body").querySelectorAll("h1, h2, h3, h4, h5, h6")[Number(a.dataset.hidx)];
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+      show(toc, false);
+    });
+  }
+}
+
+// 监听 [[wiki-link]] 点击
+document.addEventListener("click", async (e) => {
+  const link = e.target.closest("a[data-wikilink]");
+  if (!link) return;
+  e.preventDefault();
+  const title = link.dataset.title;
+  if (!title) return;
+  const r = await API.get(`/entries?q=${encodeURIComponent(title)}`);
+  if (!r.ok) return toast(`❓ ${r.error}`);
+  const found = (r.entries || []).find((e) => e.title.toLowerCase() === title.toLowerCase());
+  if (found) {
+    await selectEntry(found.id);
+  } else {
+    dialog({
+      title: `创建「${title}」？`,
+      bodyHtml: `<p>没有找到名为「${escapeHtml(title)}」的笔记。要在当前分类下新建一条吗？</p>`,
+      okText: "新建",
+      onOk: async () => {
+        const create = await API.post("/entry", { title, content: "", category: state.filter.category || "" });
+        if (!create.ok) return toast(`❌ ${create.error}`);
+        await loadCategories();
+        await loadEntries();
+        await selectEntry(create.entry.id);
+      },
+    });
+  }
+});
+
+// ---------------- 图片与文件上传 + 树节点拖入编辑器生成双链 ----------------
+async function uploadAsset(file, fallbackName) {
+  const formData = new FormData();
+  formData.append("file", file, file.name || fallbackName || "clipboard.png");
+  const r = await hana.api.fetch("/asset/upload", { method: "POST", body: formData });
+  return r.json();
+}
+
+$("vditor-mount")?.addEventListener("paste", async (e) => {
+  const items = e.clipboardData?.items || [];
+  for (const item of items) {
+    if (item.kind === "file" && item.type.startsWith("image/")) {
+      e.preventDefault();
+      e.stopPropagation();
+      const file = item.getAsFile();
+      if (!file) continue;
+      const json = await uploadAsset(file);
+      if (json.ok) {
+        Editor.insert(`![](${json.path})`);
+        toast("✓ 图片已上传");
+      } else {
+        toast(`❌ ${json.error}`);
+      }
+    }
+  }
+}, true);
+
+$("vditor-mount")?.addEventListener("drop", async (e) => {
+  // 1. 若是从左侧树拖过来的笔记节点，直接在光标处插入 [[条目标题]] 双链
+  const nvTitle = e.dataTransfer?.getData("text/nv-title");
+  if (nvTitle) {
+    e.preventDefault();
+    e.stopPropagation();
+    Editor.insert(`[[${nvTitle}]]`);
+    toast(`✓ 已插入双链 [[${nvTitle}]]`);
+    return;
+  }
+  // 2. 若是外部文件，执行资源上传
+  const files = Array.from(e.dataTransfer?.files || []);
+  if (!files.length) return;
+  e.preventDefault();
+  e.stopPropagation();
+  for (const file of files) {
+    const isImg = file.type.startsWith("image/");
+    const json = await uploadAsset(file);
+    if (!json.ok) { toast(`❌ ${file.name}：${json.error}`); continue; }
+    Editor.insert(isImg ? `![${file.name}](${json.path})` : `[${file.name}](${json.path})`);
+    toast(`✓ ${file.name} 已复制进库`);
+  }
+}, true);
+
+document.addEventListener("dragover", (e) => e.preventDefault());
+document.addEventListener("drop", (e) => e.preventDefault());
+
+// 屏幕适配：把视口高度写进 CSS 变量，各栏据此分配可滚高度。
+// 一屏装下总览；内容超了在栏内滚，不把整页拉长。
+function fitHomeToViewport() {
+  const home = $("home");
+  if (!home || home.hidden) return;
+  const h = window.innerHeight;
+  // 高度分档：首页可用高度占视口的比例
+  const budget = h <= 620 ? 0.62 : h <= 800 ? 0.70 : h <= 1000 ? 0.74 : 0.78;
+  document.documentElement.style.setProperty("--home-budget", String(budget));
+  // 标记当前高度档，CSS 按档微调
+  document.body.dataset.homeH = h <= 620 ? "xs" : h <= 800 ? "s" : h <= 1000 ? "m" : "l";
+}
+window.addEventListener("resize", fitHomeToViewport);
+
+// 首次加载与窗口重新聚焦时刷新候选数量，不用常驻轮询。
+refreshClipStage();
+window.addEventListener("focus", refreshClipStage);
+
+// ---------------- 启动 ----------------
+// 先不等握手就把总览画出来：握手在 headless/异常环境下可能永远不 resolve，
+// 那样整个面板就是一片空白。数据层自己会重试，界面先有东西看。
+try {
+  await loadStatus();
+  await loadCategories();
+  showHome();
+} catch (err) {
+  document.body.insertAdjacentHTML("afterbegin",
+    `<p style="padding:16px;color:#c0504d">界面加载失败：${escapeHtml(err?.message || String(err))}</p>`);
+}
+
+hana.ready().catch(() => {});

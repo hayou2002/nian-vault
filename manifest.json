@@ -1,0 +1,123 @@
+{
+  "manifestVersion": 2,
+  "id": "nian-vault",
+  "name": "念念收藏夹",
+  "version": "0.7.6",
+  "description": "个人数字资产仓库：收藏文字、网页、图片、文件引用与笔记，内置 OpenHanako 模型驱动的 AI 自动标签/摘要/问答与对话主动感知。",
+  "entry": "index.js",
+  "icon": "assets/icon.svg",
+  "minAppVersion": "1.1.35-beta",
+  "capabilities": [
+    "app/tools.expose-to-model",
+    "app/resources.read",
+    "app/resources.write",
+    "app/models.infer",
+    "app/models.read",
+    "app/hooks.agent-before-start",
+    "app/hooks.session-input",
+    "app/hooks.messages-post-assistant",
+    "app/session.read-selection",
+    "app/session.start-turn",
+    "app/sessions.read",
+    "app/sessions.manage",
+    "app/input.status",
+    "app/input.panels",
+    "app/process.spawn",
+    "app/ui.open-external",
+    "app/ui.clipboard-write"
+  ],
+  "contributes": {
+    "cards": [
+      {
+        "id": "panel",
+        "title": "念念收藏夹",
+        "description": "按分类整理的个人收藏与 AI 知识库",
+        "route": "/panel.html",
+        "realization": "page",
+        "cardForm": "structural",
+        "titleMode": "auto",
+        "siteNavEntry": true,
+        "face": {
+          "image": "assets/cover.svg"
+        }
+      },
+      {
+        "id": "entry",
+        "title": "念念收藏",
+        "description": "一条收藏一张卡：可多开、可钉到黑板或工作室页面",
+        "route": "/entry.html",
+        "realization": "card",
+        "cardForm": "framed",
+        "titleMode": "show",
+        "face": {
+          "image": "assets/cover.svg"
+        }
+      },
+      {
+        "id": "clip-notice",
+        "title": "念念收藏结果",
+        "description": "对话里收藏完成后的回执卡：显示收了什么、能直接打开或再收一条",
+        "route": "/clip-notice.html",
+        "realization": "card",
+        "cardForm": "framed",
+        "titleMode": "hide",
+        "face": {
+          "image": "assets/cover.svg"
+        }
+      },
+      {
+        "id": "clip-picker",
+        "title": "选要收藏的内容",
+        "description": "从这段对话里挑要收藏的片段，勾选后由 AI 整理进收藏夹",
+        "route": "/clip-picker.html",
+        "realization": "card",
+        "cardForm": "framed",
+        "titleMode": "hide",
+        "face": {
+          "image": "assets/cover.svg"
+        }
+      }
+    ],
+    "messageRenderers": [
+      {
+        "customType": "clip-notice",
+        "cardId": "clip-notice"
+      },
+      {
+        "customType": "clip-picker",
+        "cardId": "clip-picker"
+      }
+    ],
+    "ui": {
+      "messageActions": [
+        {
+          "id": "quick-clip-message",
+          "title": "📥 收入念念收藏夹",
+          "messages": "all",
+          "toolName": "nian_vault_quick_clip"
+        }
+      ],
+      "cardChrome": [],
+      "slots": [],
+      "slotContributions": [],
+      "contextMenus": [
+        {
+          "id": "clip-selection",
+          "title": "📥 收藏选中文字到念念",
+          "surface": "hana/chat.selection.contextMenu",
+          "toolName": "nian_vault_quick_clip"
+        }
+      ],
+      "inputStatus": [
+        {
+          "id": "vault-status",
+          "title": "念念收藏夹已连接",
+          "icon": "pin",
+          "text": "念念收藏",
+          "tooltip": "从当前对话里选要收藏的内容，勾选后由 AI 整理进念念收藏夹",
+          "toolName": "nian_vault_pick_from_chat"
+        }
+      ]
+    }
+  }
+}

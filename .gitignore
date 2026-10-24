@@ -1,0 +1,26 @@
+# 依赖
+node_modules/
+
+# 本机构建产物与暂存
+dist/
+build/
+*.tsbuildinfo
+
+# 测试与临时脚本的产物（放 _temp，不进仓库）
+shots/
+*.zip
+*.log
+
+# 系统垃圾
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# 本地私有配置（如有）
+.local/
+*.local.json
+
+# 编辑器
+.vscode/
+.idea/
+*.swp

@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>念念收藏夹</title>
+  <link rel="stylesheet" href="./assets/panel.css">
+  <link rel="stylesheet" href="./assets/vditor/index.css">
+</head>
+<body>
+  <div id="app" class="layout">
+    <aside class="side" id="side">
+      <div class="side-head">
+        <span class="brand">念念收藏夹</span>
+        <button class="icon-btn" id="btn-refresh" title="重新扫描库目录">↻</button>
+        <div class="menu-wrap">
+          <button class="icon-btn" id="btn-side-menu" title="新建收藏 / 存储位置 / 备份 / 设置" aria-haspopup="true">⋯</button>
+          <div class="more-menu side-menu" id="side-menu" hidden>
+            <div class="menu-sec">新建</div>
+            <button id="mi-new">＋ 新建收藏</button>
+            <div class="menu-sec">库</div>
+            <button id="mi-storage">📂 存储位置</button>
+            <button id="mi-backup">💾 备份与恢复</button>
+            <button id="mi-settings">⚙ AI 设置</button>
+          </div>
+        </div>
+      </div>
+      <div class="side-search">
+        <input id="search" type="search" placeholder="搜索标题、#标签、正文…">
+      </div>
+      <button class="cat cat-home" id="btn-home" title="总览首页"><span>◈ 首页</span></button>
+      <button class="cat cat-ai" id="btn-quick-ai" title="快速跳转笔记或向 AI 提问 (Ctrl+K)"><span>✨ 搜索与 AI 问答</span><span class="count">Ctrl+K</span></button>
+      <button class="cat cat-stage" id="btn-clip-stage" title="跳到首页「待处理」区（收件箱 + 待确认收藏）"><span>📥 待处理</span><span class="badge" id="clip-stage-count" hidden>0</span></button>
+      <div class="side-cats-head">
+        <span class="label">分类</span>
+        <button class="icon-btn" id="btn-new-cat" title="新建分类">＋</button>
+      </div>
+      <nav id="cats" class="cat-rows"></nav>
+    </aside>
+
+    <div class="splitter" id="splitter" role="separator" aria-orientation="vertical" tabindex="0" title="拖动调整宽度（双击恢复默认）"></div>
+
+    <section class="home" id="home" hidden>
+      <div class="home-head">
+        <h2>总览</h2>
+        <span class="grow"></span>
+        <button class="small ai-pill" id="btn-home-ai-ask">✨ 向 AI 提问知识库</button>
+        <span class="muted" id="home-stats"></span>
+      </div>
+      <div class="home-grid">
+        <div class="home-col home-col-main">
+          <div class="panel-title">☑ 待办 <span class="muted" id="todo-hint">勾选即在原笔记中打勾</span></div>
+          <div class="home-scroll" id="home-todos"></div>
+        </div>
+        <div class="home-col">
+          <!-- 待处理区：收件箱（已入库未分类）+ 待确认（对话里勾了还没入库的候选），
+               本来就是同一件事的两个阶段，合成一块 -->
+          <div class="panel-title">📥 待处理 <span class="muted" id="inbox-sub">待整理</span></div>
+          <div class="home-scroll"><ul class="home-list" id="home-inbox"></ul></div>
+          <div class="inbox-acts" id="inbox-acts">
+            <button class="small" id="btn-inbox-wall" title="把收件箱的收藏铺成卡片">🃏 铺开卡片</button>
+            <button class="small ai-pill" id="btn-inbox-ai" title="让 AI 分析收件箱条目并建议归到哪个分类">✨ AI 一键归类</button>
+            <button class="small danger" id="btn-inbox-clear" title="清空收件箱：这些收藏会被真正删除">🗑 清空</button>
+          </div>
+          <div id="clip-stage-slot"></div>
+          <div class="panel-title">★ 已固定</div>
+          <div class="home-scroll"><ul class="home-list" id="home-pinned"></ul></div>
+        </div>
+        <div class="home-col">
+          <div class="panel-title">◷ 最近打开 <span class="muted">默认 8 条</span></div>
+          <div class="home-scroll"><ul class="home-list" id="home-recent"></ul></div>
+          <button class="link-btn home-more" id="btn-recent-more" hidden>展开全部 →</button>
+          <div class="panel-title">🏷 标签</div>
+          <div class="home-scroll"><div class="tag-cloud" id="home-tags"></div></div>
+          <div class="panel-title">📊 分类占比</div>
+          <div class="home-scroll"><div class="cat-bars" id="home-catbars"></div></div>
+        </div>
+      </div>
+      <div class="home-foot">
+        <span class="muted" id="home-quote"></span>
+      </div>
+    </section>
+
+    <!-- 卡片墙：点分类标题或点标签，把相关收藏横向铺在这里 -->
+    <section class="wall" id="wall" hidden>
+      <div class="wall-head">
+        <button class="icon-btn" id="btn-wall-back" title="返回总览">←</button>
+        <div class="wall-title">
+          <h2 id="wall-name"></h2>
+          <span class="muted" id="wall-count"></span>
+        </div>
+        <span class="grow"></span>
+        <!-- 收件箱专属动作：只在看收件箱时出现 -->
+        <span class="wall-inbox-acts" id="wall-inbox-acts" hidden>
+          <button class="small ai-pill" id="btn-wall-inbox-ai" title="让 AI 分析这些条目并建议归到哪个分类">✨ AI 一键归类</button>
+          <button class="small danger" id="btn-wall-inbox-clear" title="清空收件箱">🗑 清空</button>
+        </span>
+        <label class="wall-sort">排序
+          <select id="wall-sort">
+            <option value="updated">最近更新</option>
+            <option value="created">创建时间</option>
+            <option value="title">标题 A→Z</option>
+            <option value="pinned">置顶优先</option>
+            <option value="reads">最近读过</option>
+          </select>
+        </label>
+        <button class="small" id="btn-wall-prev" title="上一个">‹ 上一条</button>
+        <button class="small" id="btn-wall-next" title="下一个">下一条 ›</button>
+        <button class="small" id="btn-wall-select" title="进入多选，可批量移动/加标签/删除">☑ 多选</button>
+      </div>
+      <div class="wall-batch" id="wall-batch" hidden></div>
+      <div class="wall-cards" id="wall-cards"></div>
+    </section>
+
+    <section class="detail" id="detail" hidden>
+      <div class="detail-head">
+        <button class="icon-btn only-narrow" id="btn-back-side" title="分类">☰</button>
+        <div class="head-text">
+          <h1 class="detail-title" id="v-title"></h1>
+          <div class="meta" id="v-meta"></div>
+        </div>
+        <div class="grow"></div>
+        <button class="small" id="btn-toc-toggle" title="打开本文目录" hidden>☷ 目录</button>
+        <button class="small ai-pill" id="btn-ai-entry" title="提炼摘要、打标签、提取待办与发现关联">✨ AI</button>
+        <button class="small" id="btn-toggle">编辑</button>
+        <div class="more-wrap">
+          <button class="icon-btn" id="btn-more" title="更多操作">⋯</button>
+          <div class="more-menu" id="more-menu" hidden>
+            <button id="mi-pin-home">📌 固定到首页</button>
+            <button id="mi-pin">★ 在列表置顶</button>
+            <button id="mi-board">📌 钉成卡片</button>
+            <button id="mi-copy">⧉ 复制全文</button>
+            <button id="mi-export">⬇ 导出为 .md</button>
+            <button id="mi-delete" class="danger">🗑 删除</button>
+          </div>
+        </div>
+      </div>
+      <div class="detail-main" id="detail-main">
+        <div id="view" class="view">
+          <div class="detail-hint" id="detail-hint">
+            <p>左边选一条收藏就能在这里读。</p>
+            <p class="muted">或直接说「帮我把这段整理进收藏夹」，对话里的「📥 收入念念收藏夹」会先让你勾选再入库。</p>
+          </div>
+          <article class="md" id="v-body"></article>
+          <div id="backlinks" class="backlinks" hidden>
+            <h3 class="bl-title">反向链接与提及 <span id="bl-count"></span></h3>
+            <ul id="bl-list"></ul>
+          </div>
+        </div>
+        <aside class="toc" id="toc" hidden>
+          <div class="toc-title">目录 <button class="link-btn" id="btn-toc-fold" title="收起目录">◂</button></div>
+          <ul id="toc-list"></ul>
+        </aside>
+        <button class="icon-btn toc-unfold" id="btn-toc-unfold" title="展开目录" hidden>▸</button>
+      </div>
+      <form id="edit" class="edit" hidden>
+        <input id="e-title" placeholder="标题（可留空，自动取第一行或点下方 AI 生成）">
+        <div class="row">
+          <select id="e-cat"></select>
+          <input id="e-tags" placeholder="标签，用逗号分隔">
+        </div>
+        <div class="toolbar" hidden>
+          <!-- 旧工具栏已由 Vditor 自带工具栏取代，保留容器避免旧引用报错 -->
+        </div>
+        <textarea id="e-body" hidden></textarea><!-- Vditor 不可用时（含测试环境）的降级载体 -->
+        <div class="edit-hint" id="edit-hint">
+          提示：输入 <code>[[</code> 补全双链；将左侧树节点拖入编辑器可插入双链；按 <code>Ctrl+S</code> 快速保存。
+        </div>
+        <div id="vditor-mount"></div>
+        <div class="actions">
+          <button type="button" class="ai-pill" id="btn-ai-edit" title="根据正文自动推荐标题、分类、标签并生成摘要">✨ AI 智能填充</button>
+          <span class="grow"></span>
+          <button type="button" id="btn-cancel">取消</button>
+          <button type="submit" class="primary">保存</button>
+        </div>
+      </form>
+    </section>
+  </div>
+
+  <div class="modal" id="modal" hidden>
+    <div class="dialog">
+      <h3 id="m-title"></h3>
+      <div id="m-body"></div>
+      <div class="actions">
+        <button id="m-cancel">取消</button>
+        <button id="m-ok" class="primary">确定</button>
+      </div>
+    </div>
+  </div>
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="./assets/vditor/index.min.js"></script>
+  <script type="module" src="./assets/panel.js"></script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+# 统一用 LF：本项目所有源文件都是 LF。
+# Windows 上 git 默认会把 LF 转成 CRLF，那会让我们之前修的
+# BOM/行尾问题复发，也干扰测试里 /^import .*$/gm 这类正则。
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.zip binary
+*.woff binary
+*.woff2 binary
