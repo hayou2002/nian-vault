@@ -2155,87 +2155,41 @@ let filesPicked = new Set(); // 多选：勾选的 rel 路径
 let filesPickMode = false;    // 多选模式：开着时常驻显示复选框
 let filesMode = localStorage.getItem("nv.filesMode") || "list"; // list | grid
 
-// ---- 外部文件夹浏览（引用进来的本机目录）----
-// 用户要的是：引用文件夹 = 文件管理器里的一个快捷方式，
-// 点进去能看里面有哪些子文件夹和文件。而不是变成一条笔记。
-let extBrowse = null;   // { root, sub, path, parent, items } | null
+// ---- 库外目录浏览：复用文件管理器自身的渲染 ----
+// 关键：不另写一套 UI。外部目录的内容直接喂给 filesItems，
+// 由 renderFiles 同一套代码渲染，所以卡片外观、点击、多选全都一致。
+// 用户原话：要和我们自己建立的文件夹一样，点击后是正常的文件管理器行为。
+let extCtx = null;   // { root, sub, path, parent } | null
 
-// 进入一个外部目录（root 是被引用的绝对路径，sub 是它内部的相对子路径）
 async function openExtDir(root, sub = "") {
   const r = await API.get(`/assets/browse?target=${encodeURIComponent(root)}&sub=${encodeURIComponent(sub || "")}`);
   if (!r.ok) return toast(`❌ ${r.error}`, 5000);
-  extBrowse = { root: r.root, sub: sub || "", path: r.path, parent: r.parent, items: r.items || [] };
+  extCtx = { root: r.root, sub: sub || "", path: r.path, parent: r.parent };
+  // 转成和库内完全一致的条目形状（path 用绝对路径，另加 external 标记）
+  filesItems = (r.items || []).map((f) => ({
+    name: f.name,
+    path: f.path,
+    isDir: !!f.isDir,
+    type: f.type || (f.isDir ? "folder" : "file"),
+    size: f.size ?? null,
+    mtime: f.mtime || null,
+    external: true,
+  }));
+  filesDir = "";
+  filesSel = "";
+  filesPicked = new Set();
+  filesPickMode = false;
   showView("files");
-  renderExtBrowse();
+  setActive($("btn-home"), false);
+  renderFilesModeBtns();
+  renderFiles();      // ← 用库内那套渲染
+  renderFilesExt();
 }
 
-function renderExtBrowse() {
-  const box = $("files-list");
-  if (!box || !extBrowse) return;
-  $("files-sub").textContent = `📁 本机 · ${extBrowse.path}`;
-  const items = extBrowse.items;
-  if (!items.length) {
-    box.innerHTML =
-      `<div class="files-empty">${icon("folder", 30)}<p>这个文件夹是空的。</p></div>`;
-    paintAssetImages(box);
-    return;
-  }
-  box.className = filesMode === "grid" ? "files-list files-grid" : "files-list";
-  box.innerHTML =
-    (extBrowse.parent !== null || extBrowse.sub
-      ? `<div class="frow frow-extdir" data-ext-up="1"><span class="frow-ic">${icon("folder", 16)}</span><span class="frow-n">.. 上一层</span><span class="frow-t">返回</span><span class="frow-m"></span><span class="frow-r"></span></div>`
-      : `<div class="frow frow-extdir" data-ext-back="1"><span class="frow-ic">${icon("folder", 16)}</span><span class="frow-n">← 回到库文件列表</span><span class="frow-t">返回</span><span class="frow-m"></span><span class="frow-r"></span></div>`) +
-    items.map((f) => {
-      const tint = f.isDir ? "dir" : String(f.type || "file");
-      const ic = f.isDir ? icon("folder", 16) : icon(TYPE_ICONS[f.type] || "file", 16);
-      const meta = f.isDir ? "" : fmtSize(f.size);
-      return `<div class="frow frow-${tint} frow-external" data-ext-path="${escapeAttr(f.path)}" data-ext-dir="${f.isDir ? "1" : "0"}">` +
-        `<span class="frow-ic">${ic}</span>` +
-        `<span class="frow-n">${escapeHtml(f.name)}</span>` +
-        `<span class="frow-t">${escapeHtml(f.isDir ? "本机文件夹" : TYPE_LABEL[f.type] || "文件")}</span>` +
-        `<span class="frow-m">${escapeHtml(meta)}` +
-        (f.mtime ? ` · ${escapeHtml(String(f.mtime).slice(0, 10))}` : "") + `</span>` +
-        `<span class="frow-r"></span></div>`;
-    }).join("");
-
-  // 接线
-  for (const row of box.querySelectorAll("[data-ext-up]")) {
-    row.addEventListener("click", () => {
-      const segs = String(extBrowse.sub || "").split("/").filter(Boolean);
-      segs.pop();
-      openExtDir(extBrowse.root, segs.join("/"));
-    });
-  }
-  for (const row of box.querySelectorAll("[data-ext-back]")) {
-    row.addEventListener("click", () => { extBrowse = null; loadFiles(); });
-  }
-  for (const row of box.querySelectorAll("[data-ext-path]")) {
-    const abs = row.dataset.extPath;
-    const isDir = row.dataset.extDir === "1";
-    row.addEventListener("click", () => {
-      if (isDir) {
-        // 在引用根目录内部，算出相对子路径
-        const rootNorm = String(extBrowse.root).replace(/[\\/]+$/, "");
-        let rel = String(abs).replace(/\\/g, "/");
-        const rn = rootNorm.replace(/\\/g, "/");
-        if (rel.startsWith(rn)) rel = rel.slice(rn.length).replace(/^\/+/, "");
-        openExtDir(extBrowse.root, rel);
-      } else {
-        // 本机文件：系统应用打开（不预览——文件不在库里，读不到字节）
-        hana.ui.external.open({ path: abs }).catch((err) =>
-          toast(`❌ 打不开：${err?.message || err}`, 5000));
-      }
-    });
-    row.addEventListener("contextmenu", (ev) => {
-      ev.preventDefault();
-      treeMenu(ev, [
-        { label: "📂 打开", run: () => row.click() },
-        { label: "📁 打开文件位置", run: () => revealAbsPath(abs) },
-        { label: "🔗 插入到笔记…", run: () => Editor.insert(`[[@path:${abs}|${abs.split(/[\\/]/).pop()}]]`) },
-      ]);
-    });
-  }
-  paintAssetImages(box);
+function exitExtDir() {
+  extCtx = null;
+  filesItems = [];
+  loadFiles();
 }
 
 async function openFiles(rel = "") {
@@ -2270,6 +2224,31 @@ async function loadFiles() {
 
 function renderFiles() {
   // 面包屑
+  if (extCtx) {
+    // 库外目录：显示「库文件 / 本机:路径/子路径」
+    const segs = String(extCtx.sub || "").split("/").filter(Boolean);
+    const crumbs = [`<button data-ext-exit="1">📁 库文件</button>`];
+    const rootName = String(extCtx.root).replace(/[\\/]+$/, "").split(/[\\/]/).pop() || extCtx.root;
+    crumbs.push(`<span class="crumb-sep">/</span><button data-ext-root="1">💻 ${escapeHtml(rootName)}</button>`);
+    let acc = "";
+    for (const s of segs) {
+      acc = acc ? `${acc}/${s}` : s;
+      crumbs.push(`<span class="crumb-sep">/</span><button data-ext-sub="${escapeAttr(acc)}">${escapeHtml(s)}</button>`);
+    }
+    $("files-crumbs").innerHTML = crumbs.join("");
+    const exit = $("files-crumbs").querySelector("[data-ext-exit]");
+    if (exit) exit.addEventListener("click", () => exitExtDir());
+    const rootB = $("files-crumbs").querySelector("[data-ext-root]");
+    if (rootB) rootB.addEventListener("click", () => openExtDir(extCtx.root, ""));
+    for (const b of $("files-crumbs").querySelectorAll("[data-ext-sub]")) {
+      b.addEventListener("click", () => openExtDir(extCtx.root, b.dataset.extSub));
+    }
+    const subEl = $("files-sub");
+    if (subEl) subEl.textContent = `💻 本机 · ${extCtx.path}`;
+    renderFilesBody();
+    return;
+  }
+
   const parts = filesDir ? filesDir.split("/") : [];
   const crumbs = [`<button data-crumb="">📁 库文件</button>`];
   let acc = "";
@@ -2281,9 +2260,17 @@ function renderFiles() {
   for (const b of $("files-crumbs").querySelectorAll("[data-crumb]")) {
     b.addEventListener("click", () => loadFilesTo(b.dataset.crumb));
   }
+  renderFilesBody();
+}
+
+// 真正画列表的部分（库内/库外共用）
+function renderFilesBody() {
 
   const totalSize = filesItems.reduce((s, x) => s + (x.size || 0), 0);
-  $("files-sub").textContent = filesItems.length ? `${filesItems.length} 项 · ${fmtSize(totalSize)}` : "空";
+  // 外部目录时保留"本机 · 路径"，别被"几项"覆盖掉
+  if (!extCtx) {
+    $("files-sub").textContent = filesItems.length ? `${filesItems.length} 项 · ${fmtSize(totalSize)}` : "空";
+  }
   renderFilesBatchBar();
   renderFilesModeBtns();
 
@@ -2346,16 +2333,32 @@ function renderFiles() {
       });
     }
     let clickTimer = null;
+    const isExternal = !!filesItems.find((x) => x.path === fp)?.external;
     row.addEventListener("click", (ev) => {
-      // Ctrl/Shift 点 = 多选
-      if (ev.ctrlKey || ev.metaKey || ev.shiftKey) { togglePick(fp, !filesPicked.has(fp)); return; }
+      // Ctrl/Shift 点 = 多选（外部目录不支持批量操作，直接忽略）
+      if (ev.ctrlKey || ev.metaKey || ev.shiftKey) {
+        if (isExternal) return;
+        togglePick(fp, !filesPicked.has(fp));
+        return;
+      }
       selectFile(fp);
-      // 单击直接出结果，不让用户猜"是不是要双击"：
-      // 文件夹 → 进去；文件 → 打开预览。
-      // 用 180ms 延时避开双击的第二下（双击不该连弹两次）。
-      if (filesPickMode) return;               // 多选模式下点=勾选，不打开
+      if (filesPickMode) return;
       clearTimeout(clickTimer);
       clickTimer = setTimeout(() => {
+        if (isExternal) {
+          // 库外：文件夹 → 继续往里走；文件 → 系统应用打开
+          if (isDir) {
+            const rootNorm = String(extCtx?.root || "").replace(/[\\/]+$/, "");
+            let rel = String(fp).replace(/\\/g, "/");
+            const rn = rootNorm.replace(/\\/g, "/");
+            if (rel.startsWith(rn)) rel = rel.slice(rn.length).replace(/^\/+/, "");
+            openExtDir(extCtx.root, rel);
+          } else {
+            hana.ui.external.open({ path: fp }).catch((err) =>
+              toast(`❌ 打不开：${err?.message || err}`, 5000));
+          }
+          return;
+        }
         if (isDir) loadFilesTo(fp);
         else previewAsset(fp, filesItems.find((x) => x.path === fp));
       }, 180);
@@ -3064,20 +3067,9 @@ async function doInsert(entryId, name, closeDialog, allNames = null) {
 
 // 库外引用列表
 async function renderFilesExt() {
-  // 读注册表：引用只记位置，不创建收藏条目
+  // /external/refs 已经在后端合并了老数据，并用真实 stat 修正了 isDir
   const r = await API.get("/external/refs");
-  let items = r.ok ? r.items || [] : [];
-  // 兼容老数据：以前引用会生成 type:folder 条目，那些也要能在文件管理器里看到
-  try {
-    const old = await API.get("/assets/external");
-    if (old.ok && Array.isArray(old.items)) {
-      const have = new Set(items.map((x) => String(x.target).toLowerCase()));
-      for (const o of old.items) {
-        if (have.has(String(o.target).toLowerCase())) continue;
-        items.push({ id: o.id, target: o.target, title: o.title, isDir: o.type === "folder", type: o.type, missing: o.missing, legacy: true });
-      }
-    }
-  } catch {}
+  const items = r.ok ? r.items || [] : [];
 
   const box = $("files-ext-list");
   const det = $("files-ext");
@@ -3085,7 +3077,6 @@ async function renderFilesExt() {
   det.hidden = !items.length;
   if (!items.length) { box.innerHTML = ""; return; }
 
-  // 折叠头带数量，让用户一眼看到"这里有东西"
   const sum = det.querySelector("summary");
   if (sum) sum.textContent = `库外引用（${items.length} 项 · 文件不在库里，只记了位置）`;
 
@@ -3106,12 +3097,13 @@ async function renderFilesExt() {
   for (const li of box.querySelectorAll("[data-ext]")) {
     li.addEventListener("click", async () => {
       const target = li.dataset.extTarget;
+      // 目录（无论新数据还是老数据）→ 都进文件管理器浏览，不跳收藏
       if (li.dataset.extIsdir === "1") {
         if (li.querySelector(".ref-lost")) return toast("这个目录已经不在了，先确认它没被移动", 5000);
         await openExtDir(target, "");
         return;
       }
-      // 文件类：老数据是条目，打开那条；新数据直接用系统应用打开
+      // 非目录：老数据是条目，打开它；新数据用系统应用打开
       if (li.dataset.extLegacy === "1") {
         await selectCategory("");
         await selectEntry(li.dataset.ext);
@@ -3145,6 +3137,7 @@ async function renderFilesExt() {
     });
   }
 }
+
 
 // ---- AI 整理建议（C 批）----
 // 对当前层（或勾选的）文件要一份「放哪 + 改名 + 一句话说明」的建议。
