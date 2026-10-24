@@ -820,22 +820,65 @@ const Attach = {
   async upload(fileList) {
     const files = Array.from(fileList || []);
     if (!files.length) return;
-    // 单个文件上限：和文件管理器保持一致（后端也会再拦一次）
-    const MAX = 20 * 1024 * 1024;
-    const tooBig = files.filter((f) => f.size > MAX);
-    if (tooBig.length) {
-      toast(`❌ ${tooBig[0].name} 超过 20MB，请改用文件管理器上传`, 5000);
-      return;
-    }
-    // 上传到当前所在层（filesSel 为空 = 库根资源目录）
-    const sub = filesSel ? filesSel.replace(/^_assets\//, "") : "";
+    // 不再在前端写死 20MB。后端上限是 50MB（routes.js 的 MAX_ASSET），
+    // 前端更严只会莫名其妙拦住本来能传的文件——之前那个 20MB 就是我自己拍脑袋写的。
+    // 现在只做一件事：超过后端上限的，提示改用"引用"（连引用都不搬文件）。
+    const HARD = 50 * 1024 * 1024;   // 与后端 MAX_ASSET 对齐
+    const SUBDIR = filesSel ? filesSel.replace(/^_assets\//, "") : "";
     let okN = 0;
     const errs = [];
+
     for (const f of files) {
+      // 超过后端上限：不报死，改成提供两条路（引用 / 移动）。用户说过"能跳转就行"。
+      if (f.size > HARD) {
+        const pick = await new Promise((resolve) => {
+          let done = false;
+          const once = (v) => { if (!done) { done = true; resolve(v); } };
+          dialog({
+            title: "这个文件比较大",
+            bodyHtml:
+              `<p>${escapeHtml(f.name)}（${fmtSize(f.size)}）超过了直接上传的上限 50MB。</p>` +
+              `<p class="muted">你可以选一种方式：</p>` +
+              `<ul class="muted" style="margin:4px 0 0 16px;padding:0">` +
+              `<li><b>引用它</b>：不搬文件，正文里放一个能点开的入口（推荐）</li>` +
+              `<li><b>移进库</b>：把文件搬到库里再插入，占库空间</li>` +
+              `<li><b>跳过</b>：不处理这个文件</li></ul>`,
+            okText: "引用它",
+            onOk: () => once("ref"),
+            onClose: () => once("skip"),
+            onMount: () => {
+              // 第二个操作按钮：把 okText 之外的另一条路放出来
+              const host = $("m-body");
+              const bar = document.createElement("div");
+              bar.style.cssText = "margin-top:10px;display:flex;gap:6px";
+              const mv = document.createElement("button");
+              mv.type = "button"; mv.className = "small"; mv.textContent = "移进库";
+              mv.addEventListener("click", () => { once("move"); show($("modal"), false); });
+              bar.appendChild(mv);
+              host.appendChild(bar);
+            },
+          });
+        });
+
+        if (pick === "ref") {
+          // 引用：选中的这个文件用"指针"方式插进正文，正文里是一个可点开的块
+          const ref = await refLocalFile(f);
+          if (ref) { this.insertRefBlock(ref); okN++; }
+          continue;
+        }
+        if (pick === "move") {
+          const moved = await moveLocalIntoVault(f);
+          if (moved) { this.insertPath(moved, false, guessTypeOf(f.name)); okN++; }
+          continue;
+        }
+        errs.push(`${f.name}：已跳过`);
+        continue;
+      }
+
       try {
         const fd = new FormData();
         fd.append("file", f, f.name);
-        fd.append("subdir", sub);
+        fd.append("subdir", SUBDIR);
         const res = await hana.api.fetch("/asset/upload", { method: "POST", body: fd });
         const j = await res.json();
         if (j && j.path) { okN++; this.insertPath(j.path, false, guessTypeOf(f.name)); }
@@ -2032,6 +2075,10 @@ async function openFiles(rel = "") {
   filesDir = rel || "";
   filesSel = "";
   filesPicked = new Set();
+  // 每次进文件管理器都退出多选模式。
+  // 不重置的话：点过一次「☑ 多选」→ 之后无论进出多少次都还是多选态，
+  // 复选框一直挂在每行上，而按钮高亮早丢了，用户以为没进多选（就是这样被反馈的）。
+  filesPickMode = false;
   showView("files");
   setActive($("btn-home"), false);
   renderFilesModeBtns();
@@ -2042,6 +2089,7 @@ async function loadFilesTo(rel) {
   filesDir = rel || "";
   filesSel = "";
   filesPicked = new Set();
+  filesPickMode = false;   // 换目录同样退出多选，避免残留
   await loadFiles();
 }
 
@@ -2270,6 +2318,9 @@ async function deleteAssetsFlow(srcs) {
 
 // 视图切换
 function renderFilesModeBtns() {
+  // 按钮高亮必须和 filesPickMode 同步，否则出现"复选框显示但按钮没亮"的错位。
+  $("btn-files-pick")?.classList.toggle("active", filesPickMode);
+
   const l = $("btn-files-list"), g = $("btn-files-grid");
   if (!l || !g) return;
   l.classList.toggle("active", filesMode !== "grid");
@@ -3261,8 +3312,10 @@ function renderWall() {
   $("wall-count").textContent = `${wallList.length} 条`;
   // 收件箱专属动作只在看收件箱时露出来
   show($("wall-inbox-acts"), wallKind === "category" && wallValue === "收件箱");
-  // 多选态：进了多选就只显示勾选框，普通点击变成勾选/取消
+  // 多选态：进了多选就只显示勾选框，普通点击变成勾选/取消。
+  // 这个 class 是复选框显隐的唯一开关（CSS 里 .wall-cards.wall-multi .wcard-check）。
   const multi = wallSelectMode || wallPicked.size > 0;
+  $("wall-cards").classList.toggle("wall-multi", multi);
   $("wall-cards").innerHTML = wallList.map((e, i) => {
     const picked = wallPicked.has(e.id);
     // 库内上传的图片直接露封面；本地引用的图 iframe 读不到，只给角标
@@ -3281,6 +3334,37 @@ function renderWall() {
     </button>`;
   }).join("");
   for (const b of $("wall-cards").querySelectorAll(".wcard")) {
+    // 右键菜单：卡片墙上每张卡都能右键，动作与顶栏 ⋯ 一致（先选中再点 mi-*）
+    b.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      const id = b.dataset.id;
+      const e = wallList.find((x) => x.id === id);
+      if (!e) return;
+      const act = (btnId) => async () => {
+        await selectCategory(wallKind === "category" ? wallValue : "");
+        await selectEntry(id);
+        $(btnId)?.click();
+      };
+      treeMenu(ev, [
+        { label: "📖 打开", run: async () => {
+            showWall(false);
+            if (wallKind === "category") await selectCategory(wallValue);
+            else await selectCategory("");
+            await selectEntry(id);
+          } },
+        { label: e.pinned ? "☆ 取消置顶" : "★ 置顶", run: async () => {
+            const r = await API.post("/entry", { id, pinned: !e.pinned });
+            if (!r.ok) return toast(`❌ ${r.error}`);
+            toast(!e.pinned ? "★ 已置顶" : "☆ 已取消置顶");
+            await loadEntries(); renderWall();
+          } },
+        { label: "📌 钉成卡片", run: act("mi-board") },
+        { label: "⧉ 复制全文", run: act("mi-copy") },
+        { label: "⬇ 导出为 .md", run: act("mi-export") },
+        { label: "☑ 加入多选", run: () => { wallSelectMode = true; wallPicked.add(id); renderWall(); } },
+        { label: "🗑 删除", danger: true, run: act("mi-delete") },
+      ]);
+    });
     b.addEventListener("click", async (ev) => {
       const id = b.dataset.id;
       // 多选态：点卡片 = 勾选/取消；Ctrl/Shift 点 = 加入多选

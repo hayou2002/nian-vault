@@ -194,10 +194,14 @@ body.resizing { cursor: col-resize; user-select: none; }
 .wcard.has-cover { min-height: 76px; }
 
 /* 多选：卡片勾选框 + 批量操作栏 */
-.wcard-check { flex: none; width: 16px; height: 16px; margin-top: 1px; border: 1.5px solid var(--c-border);
-  border-radius: 4px; background: var(--c-card); font-size: 11px; line-height: 14px; text-align: center;
-  color: #fff; }
-.wcard:hover .wcard-check { border-color: var(--c-accent); }
+/* 默认不显示。只有卡片墙进了多选模式（.wall-multi）才露出来。
+   之前这里没有 opacity:0/display:none，所以那个方框一直在每张卡上——
+   就是用户反复反馈"没点多选就出现了"的东西。 */
+.wcard-check { flex: none; display: none; width: 16px; height: 16px; margin-top: 1px;
+  border: 1.5px solid var(--c-border); border-radius: 4px; background: var(--c-card);
+  font-size: 11px; line-height: 14px; text-align: center; color: #fff; }
+.wall-cards.wall-multi .wcard-check { display: block; }
+.wall-cards.wall-multi .wcard:hover .wcard-check { border-color: var(--c-accent); }
 .wcard.picked { border-color: var(--c-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--c-accent) 22%, transparent); }
 .wcard.picked .wcard-check { background: var(--c-accent); border-color: var(--c-accent); }
 .wcard.picked .wcard-title { color: var(--c-accent); }
