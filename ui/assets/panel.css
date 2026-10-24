@@ -748,3 +748,22 @@ button.ai-pill:hover {
 .ai-sug-dir, .ai-sug-name { font: inherit; font-size: 12px; padding: 2px 5px; min-width: 0; width: 100%;
   border: 1px solid var(--c-border); border-radius: 5px; background: var(--c-bg); color: var(--c-text); }
 .ai-sug-dir:focus, .ai-sug-name:focus { outline: none; border-color: var(--c-accent); }
+
+/* ===== 库规则编辑器 ===== */
+.rules-editor { width: 100%; min-height: 300px; max-height: 52vh; resize: vertical;
+  font-family: var(--font-mono, ui-monospace, "Cascadia Code", Consolas, monospace);
+  font-size: 12.5px; line-height: 1.6; padding: 10px 12px; margin-top: 8px;
+  border: 1px solid var(--c-border); border-radius: var(--r); background: var(--c-bg); color: var(--c-text);
+  white-space: pre-wrap; word-break: break-word; }
+.rules-editor:focus { outline: none; border-color: var(--c-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--c-accent) 14%, transparent); }
+
+/* ===== 多选复选框：默认隐，悬停/多选模式/已勾选时显 ===== */
+.frow .frow-cb { opacity: 0; width: 13px; height: 13px; transition: opacity .12s ease; }
+.frow:hover .frow-cb, .frow.cb-on .frow-cb, .frow.picked .frow-cb { opacity: 1; }
+.frow.cb-on .frow-cb, .frow.picked .frow-cb { width: 15px; height: 15px; }
+.fgrid .frow-cb { opacity: 0; transition: opacity .12s ease; }
+.fgrid:hover .frow-cb, .fgrid.cb-on .frow-cb, .fgrid.picked .frow-cb { opacity: 1; }
+.fgrid.cb-on .frow-cb, .fgrid.picked .frow-cb { width: 15px; height: 15px; }
+/* 多选开关按钮的激活态 */
+.files-head .small.active, .files-view-switch .small.active { background: var(--c-accent); color: #fff; border-color: var(--c-accent); }

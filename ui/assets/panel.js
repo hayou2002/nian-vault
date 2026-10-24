@@ -1705,6 +1705,7 @@ let filesDir = "";        // 当前所在目录，相对 _assets，空 = 根
 let filesSel = "";        // 单选选中的文件/目录 rel 路径
 let filesItems = [];      // 当前层内容
 let filesPicked = new Set(); // 多选：勾选的 rel 路径
+let filesPickMode = false;    // 多选模式：开着时常驻显示复选框
 let filesMode = localStorage.getItem("nv.filesMode") || "list"; // list | grid
 
 async function openFiles(rel = "") {
@@ -1767,7 +1768,8 @@ function renderFiles() {
     const meta = f.isDir
       ? `${f.count} 项`
       : `${fmtSize(f.size)}${f.mtime ? ` · ${String(f.mtime).slice(0, 10)}` : ""}`;
-    return `<div class="frow frow-${tint}${sel}${picked ? " picked" : ""}" data-fp="${escapeAttr(f.path)}" data-dir="${f.isDir ? "1" : "0"}" draggable="true">` +
+    const showCb = filesPickMode || picked;
+    return `<div class="frow frow-${tint}${sel}${picked ? " picked" : ""}${showCb ? " cb-on" : ""}" data-fp="${escapeAttr(f.path)}" data-dir="${f.isDir ? "1" : "0"}" draggable="true">` +
       `<input type="checkbox" class="frow-cb" data-cb="${escapeAttr(f.path)}"${picked ? " checked" : ""} title="勾选后可批量操作">` +
       `<span class="frow-ic">${ic}</span>` +
       `<span class="frow-n">${escapeHtml(f.name)}</span>` +
@@ -1783,7 +1785,8 @@ function renderFiles() {
     const thumb = !f.isDir && f.type === "image"
       ? `<img class="fg-thumb" src="../routes/_assets/${escapeAttr(f.path.replace(/^_assets\//, ""))}" loading="lazy" alt="">`
       : `<span class="fg-ic">${f.isDir ? icon("folder", 26) : icon(TYPE_ICONS[f.type] || "file", 26)}</span>`;
-    return `<div class="fgrid fgrid-${tint}${picked ? " picked" : ""}" data-fp="${escapeAttr(f.path)}" data-dir="${f.isDir ? "1" : "0"}" draggable="true">` +
+    const showCb = filesPickMode || picked;
+    return `<div class="fgrid fgrid-${tint}${picked ? " picked" : ""}${showCb ? " cb-on" : ""}" data-fp="${escapeAttr(f.path)}" data-dir="${f.isDir ? "1" : "0"}" draggable="true">` +
       `<input type="checkbox" class="frow-cb" data-cb="${escapeAttr(f.path)}"${picked ? " checked" : ""}>` +
       thumb +
       `<span class="fg-n" title="${escapeAttr(f.name)}">${escapeHtml(f.name)}</span>` +
@@ -1953,6 +1956,16 @@ function renderFilesModeBtns() {
   g.classList.toggle("active", filesMode === "grid");
 }
 
+// 多选模式：开着时复选框常驻可见，关掉时靠悬停或 Ctrl 点。
+function togglePickMode(force) {
+  filesPickMode = force === undefined ? !filesPickMode : !!force;
+  const b = $("btn-files-pick");
+  if (b) b.classList.toggle("active", filesPickMode);
+  // 关掉时清空已选，免得留着看不见的勾选让人以为还能批量操作
+  if (!filesPickMode) filesPicked = new Set();
+  renderFiles();
+}
+
 function setFilesMode(mode) {
   filesMode = mode;
   localStorage.setItem("nv.filesMode", mode);
@@ -1961,23 +1974,52 @@ function setFilesMode(mode) {
 
 // 引用本机已有的文件夹/文件：存引用不复制
 async function collectExistingFlow() {
+  // 让宿主弹选择器。mode 的合法值没有文档，所以渐进尝试：
+  // 1) 不传 mode（宿主默认，最可能支持）
+  // 2) 传 mode:"any"（明确要文件和文件夹都能选）
+  // 3) 传 mode:"file"
+  // 任何一步抛异常就退下一步；拿到结果就用。
+  const attempts = [{}, { mode: "any" }, { mode: "file" }, { mode: "files" }];
   let picked = null;
-  try {
-    picked = await hana.resources.pick({ mode: "any" });
-  } catch (err) {
-    toast(`打开选择器失败：${err?.message || err}`, 4500);
+  let lastErr = null;
+  for (const arg of attempts) {
+    try {
+      const r = await hana.resources.pick(arg);
+      const first = r?.resources?.[0] || r?.[0] || null;
+      const t = first?.path || first?.uri;
+      if (t) { picked = r; break; }
+      // 没抛错但也没选到东西 = 用户取消了，别继续试
+      if (r) break;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  if (!picked) {
+    if (lastErr) toast(`打开选择器失败：${lastErr?.message || lastErr}`, 4500);
     return;
   }
-  const r0 = picked?.resources?.[0] || picked?.[0] || null;
-  const target = r0?.path || r0?.uri;
-  if (!target) return toast("没有选中任何文件或文件夹");
-  const clean = String(target).replace(/^file:\/\//, "");
-  const r = await API.post("/ref/collect", { target: clean, category: state.filter.category || "收件箱" });
+  const first = picked?.resources?.[0] || picked?.[0] || null;
+  const raw = first?.path || first?.uri;
+  if (!raw) return toast("没有选中任何文件或文件夹");
+  // 可能是 file:// URI，也可能是裸路径；都统一成裸路径
+  let target = String(raw).replace(/^file:\/\//, "");
+  try { target = decodeURIComponent(target); } catch {}
+  if (!target) return toast("选中的路径为空");
+
+  const isDir = /\.(\w{1,8})$/.test(target.split(/[\\/]/).pop() || "") ? false : true;
+  const r = await API.post("/ref/collect", {
+    target,
+    // 类型让后端判：它会 stat 一次，文件夹不会因为没扩展名而被错判成 file
+    category: state.filter.category || "收件箱",
+    title: target.split(/[\\/]/).filter(Boolean).pop() || undefined,
+  });
   if (!r.ok) return toast(`❌ ${r.error}`, 4500);
   await loadCategories();
   await loadFiles();
-  toast(`✓ 已引用《${r.entry.title}》（只记位置，不复制文件）`, 4500);
+  const kindWord = r.entry.type === "folder" ? "文件夹" : "文件";
+  toast(`✓ 已引用${kindWord}《${r.entry.title}》（只记位置，不复制）`, 4500);
 }
+
 
 // 选中一行：右侧显示操作条 + 引用数
 async function selectFile(fp) {
@@ -2305,6 +2347,7 @@ $("btn-files-up").addEventListener("click", uploadAssetFlow);
 $("btn-files-mkdir").addEventListener("click", mkAssetDirFlow);
 $("btn-files-ref").addEventListener("click", collectExistingFlow);
 $("btn-files-ai").addEventListener("click", openAiOrganizeFiles);
+$("btn-files-pick").addEventListener("click", () => togglePickMode());
 $("btn-files-list").addEventListener("click", () => setFilesMode("list"));
 $("btn-files-grid").addEventListener("click", () => setFilesMode("grid"));
 // 批量栏
