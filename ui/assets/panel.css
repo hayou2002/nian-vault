@@ -995,3 +995,12 @@ button.ai-pill:hover {
 .frow.frow-external:hover { background: var(--c-accent-light); }
 .frow.frow-extdir { cursor: pointer; color: var(--c-muted); }
 .frow.frow-extdir:hover { background: var(--c-accent-light); }
+
+/* ===== 库外引用条目：和库内同款，只是多了虚线边 + 本机角标 ===== */
+.frow.frow-local { border-left: 2px solid color-mix(in srgb, var(--c-accent) 55%, transparent); }
+.fgrid.fgrid-local { border-style: dashed;
+  border-color: color-mix(in srgb, var(--c-accent) 45%, var(--c-border)); }
+.ext-badge { display: inline-block; margin-left: 5px; padding: 0 5px;
+  font-size: 10px; font-weight: 600; letter-spacing: .02em; vertical-align: 1px;
+  border-radius: 3px; background: color-mix(in srgb, var(--c-accent) 15%, transparent);
+  color: var(--c-accent); }
