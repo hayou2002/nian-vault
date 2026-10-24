@@ -976,3 +976,15 @@ button.ai-pill:hover {
   border: none; border-radius: 6px; background: none; color: var(--c-muted); font-size: 14px; }
 .preview-close:hover { background: var(--c-accent-light); color: var(--c-text); }
 .preview-body { flex: 1; min-height: 0; overflow: auto; padding: 12px 14px; }
+
+/* ===== 库外文件夹快捷方式：要和库内文件夹一眼分开 ===== */
+#files-ext-list .ext-shortcut { border-style: dashed; }
+.ext-badge { display: inline-block; margin-left: 4px; padding: 0 5px;
+  font-size: 10px; font-weight: 600; letter-spacing: .02em;
+  border-radius: 3px; background: color-mix(in srgb, var(--c-accent) 14%, transparent);
+  color: var(--c-accent); vertical-align: 1px; }
+/* 浏览外部目录时，本机条目的行 */
+.frow.frow-external { cursor: pointer; }
+.frow.frow-external:hover { background: var(--c-accent-light); }
+.frow.frow-extdir { cursor: pointer; color: var(--c-muted); }
+.frow.frow-extdir:hover { background: var(--c-accent-light); }
