@@ -2426,6 +2426,66 @@ async function pickVaultDir() {
   });
 }
 
+// ---- 本地文件的三种处理：引用 / 移进库 / 跳过 ----
+// 用户的核心诉求：「不一定非要导入进去，能跳转或者打开相应文件就可以了」。
+// 所以引用优先——只在正文里放一个指针，文件原地不动。
+
+// 让用户在系统里挑一个文件，返回其绝对路径（不想用表单里的 File 对象，
+// 因为 File 在 iframe 沙箱里拿不到真实路径）。
+async function refLocalFile(fileObj) {
+  try {
+    const r = await hana.resources.pick({ mode: "file" });
+    const first = r?.resources?.[0] || r?.[0] || null;
+    const t = first?.path || first?.uri;
+    if (!t) {
+      toast("没有选中文件，已跳过", 3500);
+      return null;
+    }
+    let out = String(t).replace(/^file:\/\//, "");
+    try { out = decodeURIComponent(out); } catch {}
+    return out;
+  } catch (err) {
+    toast(`打开选择器失败：${err?.message || err}`, 5000);
+    return null;
+  }
+}
+
+// 把"引用"插进正文：写成一个正文块，点了会去打开原件。
+// 用自定义语法 [[@path:绝对路径]]，由 markdown 层渲染成块。
+function insertRefBlock(absPath) {
+  const name = String(absPath).split(/[\\/]/).pop() || absPath;
+  // 记进库，才能在文件管理中心里出现（② 的要求）
+  API.post("/ref/collect", {
+    target: absPath,
+    title: name,
+    category: state.filter.category || "收件箱",
+  }).then((r) => {
+    if (!r.ok) toast(`⚠ 引用已插入，但没记进库：${r.error}`, 5000);
+    else { loadCategories().catch(() => {}); refreshAssetIndex().catch(() => {}); }
+  }).catch(() => {});
+  Editor.insert(`[[@path:${absPath}|${name}]]`);
+  toast(`✓ 已插入引用《${name}》（文件没搬动，点它能打开原件）`, 4000);
+}
+
+// 把文件搬到库里：走已有的上传接口（读 File 对象 → FormData）。
+// 注意：File 对象拿得到内容但拿不到原路径，所以直接上传内容即可。
+async function moveLocalIntoVault(fileObj) {
+  try {
+    const sub = filesSel ? filesSel.replace(/^_assets\//, "") : "";
+    const fd = new FormData();
+    fd.append("file", fileObj, fileObj.name);
+    fd.append("subdir", sub);
+    const res = await hana.api.fetch("/asset/upload", { method: "POST", body: fd });
+    const j = await res.json();
+    if (j?.path) { refreshAssetIndex().catch(() => {}); return j.path; }
+    toast(`❌ 移进库失败：${j?.error || "未知原因"}`, 5000);
+    return null;
+  } catch (err) {
+    toast(`❌ 移进库失败：${err?.message || err}`, 5000);
+    return null;
+  }
+}
+
 // 用宿主选择器挑目录。mode 的合法值见 SDK：
 //   _ui-protocol.d.ts → PluginResourcePickInput.mode?: 'file' | 'directory' | string
 // 只有 'directory' 会让选择器停在"选文件夹"而不是"进入文件夹"。
@@ -2934,6 +2994,20 @@ document.addEventListener("keydown", (ev) => {
 //   子目录/视频.mp4       （带子目录）
 //   图.png                （只有名字）
 // 全部归一化后去索引里查；查到了按真实类型渲染，查不到返回 null 让上层退回 <img>。
+// ---- [[@path:绝对路径]] 的引用块 ----
+// 本机文件不在库里，所以不走 __refBlock（那边查的是库内索引）。
+// 这里只显示"这是个本机文件、叫什么、点什么能打开"，绝不假装它能预览。
+window.__refPath = (abs, name) => {
+  const ext = String(name).split(".").pop().toLowerCase();
+  const type = typeOfExt(ext);
+  const dir = String(abs).replace(/[\\/][^\\/]*$/, "");
+  return `<span class="ref-ext" data-ext-path="${escapeAttr(abs)}" title="${escapeAttr(abs)}">` +
+    `<span class="re-ic">${icon(TYPE_ICONS[type] || "file", 18)}</span>` +
+    `<span class="re-b"><span class="re-t">${escapeHtml(name)}</span>` +
+    `<span class="re-m">本机文件 · ${escapeHtml(TYPE_LABEL[type] || "文件")} · 不在库内</span></span>` +
+    `<span class="re-x">打开 ›</span></span>`;
+};
+
 window.__refBlock = (path, alt) => {
   const pool = window.__assets || {};
   // 归一化：去掉 ./ ../ ../routes/ _assets/ 这些前缀
@@ -3935,11 +4009,22 @@ function rerenderOpenEntry() {
 
 // 卡片点击：跳到文件管理器并选中
 function bindRefCards(root) {
-  for (const c of (root || document).querySelectorAll("[data-ref-card]")) {
+  for (const c of (root || document).querySelectorAll("[data-ref-card], [data-ext-path]")) {
     if (c.__bound) continue;
     c.__bound = true;
     // 视频/音频本身有控件，点播放器不该跳走
     if (c.querySelector("video, audio")) continue;
+    // 本机文件引用：点击直接用系统应用打开原件（不预览，因为文件不在库内）
+    if (c.classList.contains("ref-ext") || c.dataset.extPath) {
+      c.addEventListener("click", async (ev) => {
+        ev.preventDefault();
+        const abs = c.dataset.extPath;
+        if (!abs) return;
+        try { await hana.ui.external.open({ path: abs }); }
+        catch (err) { toast(`❌ 打不开：${err?.message || err}`, 5000); }
+      });
+      continue;
+    }
     c.addEventListener("click", () => {
       const fp = c.dataset.refCard;
       const isImg = c.classList.contains("blk-img") || c.querySelector("img");

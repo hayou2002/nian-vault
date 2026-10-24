@@ -9,6 +9,8 @@ export function setResolveAsset(fn) { resolveAsset = typeof fn === "function" ? 
 
 // ![alt](路径) 的块渲染钩子：由宿主页面注入（window.__refBlock）。
 // 返回 HTML 表示"这个路径是库内资源，按它的真实类型渲染"；返回 null 表示不是，退回 <img>。
+let refPathWarned = false;
+
 function refBlock(path, alt) {
   const fn = (typeof window !== "undefined" && window.__refBlock) || null;
   if (typeof fn !== "function") return null;
@@ -73,6 +75,26 @@ function inline(src) {
     // 找不到文件：给一个诚实的占位，不要假装有
     return `<span class="ref-missing" title="库里没有这个文件">📄 ${esc(name.trim())}（文件不存在）</span>`;
   });
+  // [[@path:绝对路径|名字]] → 本机文件的引用块（不复制文件，点了打开原件）。
+  // 必须在普通 [[双链]] 之前替换，否则会被当成一个笔记标题去查。
+  // 由 panel.js 的 markdown 层注入 window.__refPath 产出 HTML。
+  s = s.replace(/\[\[@path:([^\]\n|]+?)(?:\|([^\]\n]+?))?\]\]/g, (_, rawPath, alias) => {
+    let abs = String(rawPath).trim();
+    try { abs = decodeURIComponent(abs); } catch {}
+    const name = alias || abs.split(/[\\/]/).pop() || abs;
+    const fn = (typeof window !== "undefined" && window.__refPath) || null;
+    let html = null;
+    if (typeof fn === "function") {
+      try {
+        html = fn(abs, name);
+      } catch (err) {
+        if (!refPathWarned) { refPathWarned = true; console.error("[markdown] __refPath 抛异常：", err); }
+      }
+    }
+    // 宿主没接这个钩子时给一个诚实的占位，别显示天书
+    return html || `<span class="ref-ext" title="${esc(abs)}">🔗 ${esc(name)}</span>`;
+  });
+
   s = s.replace(/\[\[([^\]\n|]+?)(?:\|([^\]\n]+?))?(?:#([^\]\n]+?))?\]\]/g, (_, title, alias, anchor) => {
     const display = alias || (anchor ? `${title}#${anchor}` : title);
     return `<a href="#" data-wikilink data-title="${esc(title.trim())}" ${anchor ? `data-anchor="${esc(anchor)}"` : ""}>${display}</a>`;

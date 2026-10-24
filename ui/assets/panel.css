@@ -947,3 +947,16 @@ button.ai-pill:hover {
 .lightbox img { max-width: 100%; max-height: calc(100% - 32px); object-fit: contain;
   border-radius: 6px; box-shadow: 0 10px 40px rgb(0 0 0 / .5); }
 .lightbox .lb-cap { color: rgb(255 255 255 / .78); font-size: 12px; }
+
+/* ===== 本机文件引用块（[[@path:绝对路径]]）=====
+   文件不在库里，所以外观要明确区别于库内资源：虚线边 + "不在库内" */
+.md .ref-ext { display: flex; align-items: center; gap: 9px; margin: 8px 0;
+  padding: 8px 10px; cursor: pointer;
+  border: 1px dashed var(--c-border); border-radius: var(--r);
+  background: transparent; }
+.md .ref-ext:hover { border-color: var(--c-accent); background: var(--c-accent-light); }
+.md .ref-ext .re-ic { flex: none; display: inline-flex; color: var(--c-muted); }
+.md .ref-ext .re-b { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.md .ref-ext .re-t { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.md .ref-ext .re-m { font-size: 11px; color: var(--c-muted); }
+.md .ref-ext .re-x { flex: none; font-size: 11.5px; color: var(--c-accent); }
