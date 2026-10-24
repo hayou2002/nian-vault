@@ -1,5 +1,57 @@
 # 念念收藏夹 - 更新日志
 
+## [0.16.0] - 2026-10-24
+
+### 真根因：沙箱读不到库外路径
+
+你那份诊断截图直接把答案摆出来了：
+
+    vault.fs.stat       → null                               ← 读不到
+    能列出几项           → 0                                  ← 空的
+    宿主 resources.stat → exists:true, isDirectory:true      ← 宿主能读
+
+**同一个路径，宿主能读到，App 的 `node:fs` 读不到。**
+
+因为 App 跑在宿主沙箱里，`node:fs` 只能碰库目录（dataDir 内），
+Desktop 这类沙箱外路径一律读不到。所以我之前在自己终端里测「后端全对」，
+是因为那是我的环境，不是 App 的沙箱——这是我这几轮最大的盲区。
+
+之前 `vault.fs` 一个 `NodeFs` 打天下，所有 `stat`/`list` 都走它，
+遇到库外路径就全部拿不到 → 显示 0 B、文档图标、点进去是空的。
+
+### 改法：库内库外分开两个 fs
+
+`Vault` 新增 `extFs` 参数：
+
+- **库内路径**（`_assets/`、分类目录、`_vault.json`）→ `this.fs`（NodeFs，直连磁盘，快）
+- **库外路径**（引用的 Desktop / D 盘目录）→ `this.extFs`（ResourceFs，走宿主资源接口）
+
+`index.js` 里注入：`new Vault(backendFor(root), root, new ResourceFs(sdk.resources))`。
+
+改成 `extFs` 的地方：`addExternalRef`、`externalRefListFresh`、`restatExternalRefs`、
+`browseExternal`、`statFolder`、`collectRef`——凡是碰库外路径的都是。
+
+### 测试这次真的覆盖到了故障场景
+
+新增 `extfs-check`（14 项）。做法是**用一个 SandboxedFs 模拟真实沙箱**：
+库内正常读写、库外一律返回 null/空——和诊断截图里的表现一模一样。
+
+在这个环境里验证：
+
+- `vault.fs.stat(库外路径)` 确实返回 null、`extFs.stat` 正常（先确认模拟对了）
+- 引用外部文件夹时 `isDir` 正确为 true、`type` 是 folder
+- `browseExternal` **列出 2 项而不是 0**（这就是「进去没东西」的直接检验）
+- 能进子目录、看到更深一层的文件
+
+之前几轮测试全绿却修不好，就是因为测试用的是真 NodeFs，
+而真 NodeFs 在我的环境里读得到——**测试环境和真实环境不一致**。
+
+### 诊断入口保留
+
+`GET /external/diag` 和右键「🔍 诊断」留着。以后库外相关出问题，
+点一下就能看出是 `vault.fs` 读不到、`extFs` 读不到、还是宿主资源接口报错。
+
+25 个测试文件 **989 项** + 28 项视觉体检，全绿。
 ## [0.15.2] - 2026-10-24
 
 ### 先说实话

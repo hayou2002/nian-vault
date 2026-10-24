@@ -100,7 +100,11 @@ export default defineApp(async (sdk) => {
   }
 
   async function openVault(root) {
-    const v = new Vault(backendFor(root), root);
+    // extFs 专门用来操作「库外路径」。
+    // 沙箱里 NodeFs 读不到 Desktop 这类外部目录（stat 恒 null），
+    // 而宿主资源接口能读——诊断已经证实：resources.stat 返回 isDirectory:true，
+    // 同一路径走 node:fs 却是 null。
+    const v = new Vault(backendFor(root), root, new ResourceFs(sdk.resources));
     await v.init();
     return v;
   }
