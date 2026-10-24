@@ -296,7 +296,14 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 /* 库外引用 */
 .files-ext { flex: 0 0 auto; border: 1px dashed var(--c-border); border-radius: var(--r-lg); padding: 7px 11px; background: var(--c-card); }
-.files-ext summary { font-size: 12px; color: var(--c-muted); cursor: pointer; }
+/* 库外引用区要显眼：它和库内文件是两回事，不能被当成普通折叠块忽略 */
+.files-ext { border-color: color-mix(in srgb, var(--c-accent) 42%, var(--c-border));
+  background: color-mix(in srgb, var(--c-accent) 4%, transparent); }
+.files-ext summary { font-size: 12px; font-weight: 600; color: var(--c-accent); cursor: pointer;
+  list-style: none; }
+.files-ext summary::-webkit-details-marker { display: none; }
+.files-ext summary::before { content: "▸ "; }
+.files-ext[open] summary::before { content: "▾ "; }
 .files-ext-list { list-style: none; margin: 7px 0 0; padding: 0; max-height: 180px; overflow-y: auto; }
 .files-ext-list li { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: var(--r); font-size: 12.5px; cursor: pointer; }
 .files-ext-list li:hover { background: var(--c-accent-light); }

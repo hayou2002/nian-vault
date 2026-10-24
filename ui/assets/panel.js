@@ -2731,17 +2731,26 @@ async function collectExistingFlow() {
   }
   if (!target) return toast("路径为空");
 
-  const r = await API.post("/ref/collect", {
-    target,
-    // 类型让后端判：它会 stat 一次，文件夹不会因为没扩展名而被错判成 file
-    category: state.filter.category || "收件箱",
-    title: target.split(/[\\/]/).filter(Boolean).pop() || undefined,
-  });
+  // 关键改动：引用只写注册表，不创建收藏条目。
+  // 以前走 /ref/collect，它内部会 create() 一条收藏 → 跑到收件箱里。
+  // 用户要的是：引用文件夹直接进文件管理器，不该在笔记列表里出现。
+  const name = String(target).split(/[\\/]/).filter(Boolean).pop() || target;
+  const r = await API.post("/external/add", { target, title: name });
   if (!r.ok) return toast(`❌ ${r.error}`, 4500);
-  await loadCategories();
-  await loadFiles();
-  const kindWord = r.entry.type === "folder" ? "文件夹" : "文件";
-  toast(`✓ 已引用${kindWord}《${r.entry.title}》（只记位置，不复制）`, 4500);
+  const it = r.item || {};
+  const kindWord = it.isDir ? "文件夹" : "文件";
+  toast(`✓ 已引用${kindWord}《${it.title || name}》（只记位置，不复制）`, 4500);
+
+  // 刷新文件管理器的「库外引用」区，并展开它——否则用户看不到刚引用的东西
+  await renderFilesExt();
+  const det = $("files-ext");
+  if (det) {
+    det.hidden = false;
+    det.open = true;   // <details> 要显式展开
+    det.scrollIntoView?.({ block: "nearest" });
+  }
+  // 文件夹直接带用户进去浏览
+  if (it.isDir) await openExtDir(it.target, "");
 }
 
 
@@ -3055,34 +3064,84 @@ async function doInsert(entryId, name, closeDialog, allNames = null) {
 
 // 库外引用列表
 async function renderFilesExt() {
-  const r = await API.get("/assets/external");
-  const items = r.ok ? r.items || [] : [];
+  // 读注册表：引用只记位置，不创建收藏条目
+  const r = await API.get("/external/refs");
+  let items = r.ok ? r.items || [] : [];
+  // 兼容老数据：以前引用会生成 type:folder 条目，那些也要能在文件管理器里看到
+  try {
+    const old = await API.get("/assets/external");
+    if (old.ok && Array.isArray(old.items)) {
+      const have = new Set(items.map((x) => String(x.target).toLowerCase()));
+      for (const o of old.items) {
+        if (have.has(String(o.target).toLowerCase())) continue;
+        items.push({ id: o.id, target: o.target, title: o.title, isDir: o.type === "folder", type: o.type, missing: o.missing, legacy: true });
+      }
+    }
+  } catch {}
+
   const box = $("files-ext-list");
   const det = $("files-ext");
+  if (!box || !det) return;
   det.hidden = !items.length;
   if (!items.length) { box.innerHTML = ""; return; }
-  // 文件夹类的引用 → 显示成"快捷方式"，点进去浏览里面的内容。
-  // 文件类的引用 → 仍然打开那条笔记（它本身就是一次收藏）。
+
+  // 折叠头带数量，让用户一眼看到"这里有东西"
+  const sum = det.querySelector("summary");
+  if (sum) sum.textContent = `库外引用（${items.length} 项 · 文件不在库里，只记了位置）`;
+
   box.innerHTML = items.map((x) => {
-    const isDir = x.type === "folder";
+    const isDir = !!x.isDir;
+    const type = x.type || (isDir ? "folder" : "file");
     return `<li data-ext="${escapeAttr(x.id)}" data-ext-target="${escapeAttr(x.target)}" data-ext-isdir="${isDir ? "1" : "0"}"` +
+      ` data-ext-legacy="${x.legacy ? "1" : "0"}"` +
       (isDir ? ' class="ext-shortcut"' : "") + `>` +
-      `<span class="frow-ic">${icon(isDir ? "folder" : (TYPE_ICONS[x.type] || "file"), 14)}</span>` +
-      `<span class="frow-n">${escapeHtml(x.title)}${x.missing ? ' <b class="ref-lost">已失效</b>' : ""}` +
-      (isDir ? ` <b class="ext-badge">本机</b>` : "") + `</span>` +
+      `<span class="frow-ic">${icon(isDir ? "folder" : (TYPE_ICONS[type] || "file"), 14)}</span>` +
+      `<span class="frow-n">${escapeHtml(x.title || x.target)}` +
+      (x.missing ? ' <b class="ref-lost">已失效</b>' : "") +
+      (isDir ? ' <b class="ext-badge">本机</b>' : "") + `</span>` +
       `<span class="frow-m" title="${escapeAttr(x.target)}">${escapeHtml(String(x.target).slice(0, 46))}</span>` +
       `</li>`;
   }).join("");
+
   for (const li of box.querySelectorAll("[data-ext]")) {
     li.addEventListener("click", async () => {
-      // 文件夹快捷方式：直接在应用内浏览它的内容
+      const target = li.dataset.extTarget;
       if (li.dataset.extIsdir === "1") {
         if (li.querySelector(".ref-lost")) return toast("这个目录已经不在了，先确认它没被移动", 5000);
-        await openExtDir(li.dataset.extTarget, "");
+        await openExtDir(target, "");
         return;
       }
-      await selectCategory("");
-      await selectEntry(li.dataset.ext);
+      // 文件类：老数据是条目，打开那条；新数据直接用系统应用打开
+      if (li.dataset.extLegacy === "1") {
+        await selectCategory("");
+        await selectEntry(li.dataset.ext);
+        return;
+      }
+      hana.ui.external.open({ path: target }).catch((err) =>
+        toast(`❌ 打不开：${err?.message || err}`, 5000));
+    });
+    li.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      const target = li.dataset.extTarget;
+      const isDir = li.dataset.extIsdir === "1";
+      const acts = [
+        { label: "📂 打开", run: () => li.click() },
+        { label: "📁 打开文件位置", run: () => revealAbsPath(target) },
+      ];
+      if (isDir) {
+        acts.push({ label: "🔗 复制路径", run: () => hana.ui.clipboard.writeText({ text: target }) });
+      }
+      if (li.dataset.extLegacy !== "1") {
+        acts.push({ label: "🗑 取消引用", danger: true, run: async () => {
+          const ok2 = await confirmBox("取消这条引用？", `只删除这条记录，磁盘上的文件不会被删。\n\n${target}`);
+          if (!ok2) return;
+          const rr = await API.post("/external/remove", { id: li.dataset.ext });
+          if (!rr.ok) return toast(`❌ ${rr.error}`, 5000);
+          toast("✓ 已取消引用");
+          await renderFilesExt();
+        } });
+      }
+      treeMenu(ev, acts);
     });
   }
 }
