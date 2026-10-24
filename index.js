@@ -768,6 +768,7 @@ const deliverNotice = async (args, payload) => {
   // ---------------- 卡片界面用的路由 ----------------
   await sdk.routes.register((app) => {
     registerRoutes(app, {
+      sdk,
       getVault,
       setLocation,
       currentLocation,

@@ -1,5 +1,44 @@
 # 念念收藏夹 - 更新日志
 
+## [0.15.2] - 2026-10-24
+
+### 先说实话
+
+这一版我没能修好它——因为**我用真实库数据跑了一遍，后端每一步都是对的**：
+
+    target: C:\Users\Administrator\Desktop\OH-WorkSpace
+    存的:   { isDir: false, type: file, missing: true }      ← 坏数据
+    fs.stat → { size: 0, isDir: true }                       ← 真实答案是目录
+    list    → 13 项                                          ← 能列出来
+    刷新后  → { isDir: true, type: folder, missing: false }  ← 已自动修正
+    browse  → 13 项: _temp, _tools, .optimize…               ← 能浏览
+
+也就是说：坏数据会被自动修正，`externalAsAssets()` 输出 `isDir: true`，浏览接口能用。
+**但界面上看到的还是 0 B + 文档图标。**
+
+这说明问题出在「从后端到界面」这一段，我手上的信息不够定位。
+
+### 所以加了一个诊断入口
+
+文件管理器里**右键那个库外条目 → 🔍 诊断（为什么读不到）**。
+它会把这些一次摆出来：
+
+- 数据库里存的值（isDir / type / missing）
+- `vault.fs.stat` 的真实返回
+- `fs.list` 能列出几项
+- 宿主 `resources.stat` 的原始返回（如果有这个能力）
+- 后端类型和库根路径
+
+后端新增 `GET /external/diag`，`deps` 里补了 `sdk` 以便读宿主资源接口。
+
+### 下一步
+
+装上后右键那个条目 → 诊断，把弹出的内容截图给我。
+哪一项为空、哪一项报错，就能直接定位断在哪一层，不用再来回猜。
+
+### 测试
+
+24 个测试文件 975 项 + 28 项视觉体检，全绿。
 ## [0.15.1] - 2026-10-24
 
 ### 修「打不开」：目录被当成文件了

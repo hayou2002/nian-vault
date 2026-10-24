@@ -2832,6 +2832,7 @@ function extRowMenu(ev, item) {
       } },
     { label: "📁 打开文件位置", run: () => revealAbsPath(fp) },
     { label: "🔗 复制路径", run: () => hana.ui.clipboard.writeText({ text: fp }) },
+    { label: "🔍 诊断（为什么读不到）", run: () => showExtDiag() },
   ];
   if (item.extId) {
     items.push({ label: "🗑 取消引用", danger: true, run: async () => {
@@ -2844,6 +2845,42 @@ function extRowMenu(ev, item) {
     } });
   }
   treeMenu(ev, items);
+}
+
+// 诊断：把后端读这个路径的真实结果摆出来。
+// 我前面一直在猜"是不是 stat 失败"，与其继续猜，不如让 App 自己说。
+async function showExtDiag() {
+  const r = await API.get("/external/diag");
+  if (!r.ok) return toast(`❌ ${r.error}`, 5000);
+  const esc = (s) => escapeHtml(String(s ?? ""));
+  const blk = (label, val) =>
+    `<div style="margin:6px 0"><b style="font-size:11.5px">${esc(label)}</b>` +
+    `<pre style="margin:2px 0 0;padding:7px 9px;background:rgb(0 0 0/.04);border-radius:6px;` +
+    `font-size:11px;line-height:1.5;overflow-x:auto;white-space:pre-wrap">${esc(typeof val === "string" ? val : JSON.stringify(val, null, 2))}</pre></div>`;
+
+  const items = (r.items || []).map((it) => {
+    let html = `<div style="margin:10px 0;padding-bottom:8px;border-bottom:1px solid var(--c-border)">`;
+    html += `<div style="font-size:12.5px;font-weight:600;word-break:break-all">${esc(it.target)}</div>`;
+    html += blk("数据库里存的", it.stored);
+    if (it.fsStat !== undefined) html += blk("vault.fs.stat", it.fsStat);
+    if (it.fsStatError) html += blk("vault.fs.stat 出错", it.fsStatError);
+    if (it.listLen !== undefined) html += blk("能列出几项", it.listLen);
+    if (it.listError) html += blk("list 出错", it.listError);
+    if (it.hostStat !== undefined) html += blk("宿主 resources.stat", it.hostStat);
+    if (it.hostStatError) html += blk("宿主 resources.stat 出错", it.hostStatError);
+    html += `</div>`;
+    return html;
+  }).join("");
+
+  dialog({
+    title: "🔍 库外引用诊断",
+    bodyHtml:
+      `<p class="muted" style="margin:0 0 8px;font-size:11.5px">` +
+      `后端：${esc(r.backend)} · 库根：${esc(r.vaultRoot)} · 共 ${r.count} 条</p>` +
+      (items || `<p class="muted">没有任何库外引用</p>`),
+    okText: "关闭",
+    onOk: () => {},
+  });
 }
 
 function fileRowMenu(ev, fp, isDir) {
