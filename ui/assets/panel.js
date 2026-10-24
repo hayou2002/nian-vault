@@ -621,7 +621,52 @@ const Editor = {
       placeholder: "直接开始写，像 Word 一样；工具栏可切换源码模式",
       toolbar: ["headings", "bold", "italic", "strike", "|", "list", "ordered-list", "check", "|", "quote", "code", "inline-code", "link", "table", "|", "undo", "redo", "|", "edit-mode", "fullscreen"],
       lang: "zh_CN",
-      after: () => { /* 就绪 */ },
+      // 图片上传：接已有的 POST /asset/upload（FormData）。
+      // 不另造接口——文件管理器和编辑器共用一条，行为一致。
+      upload: {
+        // 用真实文件名，不要 Vditor 默认的随机串（用户要对得上自己传了什么）
+        filename: (f) => f.name,
+        handler: (files) => Promise.all([...files].map(async (f) => {
+          try {
+            const fd = new FormData();
+            fd.append("file", f, f.name);
+            // 传到编辑器当前条目所在层（filesSel 为空 = 库根资源目录）
+            fd.append("subdir", filesSel ? filesSel.replace(/^_assets\//, "") : "");
+            const res = await hana.api.fetch("/asset/upload", { method: "POST", body: fd });
+            const j = await res.json();
+            if (!j || !j.path) throw new Error(j?.error || "上传失败");
+            // 成功：Vditor 会把返回的字符串当 src 插进去
+            return j.path;
+          } catch (err) {
+            toast(`❌ 图片上传失败：${err?.message || err}`, 5000);
+            // 返回空串 = Vditor 不插入，比插一张裂图好
+            return "";
+          }
+        })),
+      },
+      after: () => {
+        // wysiwyg 下 <img src="_assets/x.png"> 会按面板 base URL 解析，图裂。
+        // 这里把已渲染出来的相对路径统一改写成 /_assets/ 前缀。
+        // 只在 after 跑一次不够——内容会随输入变，所以用 MutationObserver 兜着。
+        const fixImgs = (root) => {
+          if (!root || !root.querySelectorAll) return;
+          for (const img of root.querySelectorAll("img")) {
+            const src = img.getAttribute("src") || "";
+            // 只动库内相对路径；http/data/绝对路径不碰
+            if (/^(https?:|data:|\/)/i.test(src)) continue;
+            const clean = src.replace(/^\.\//, "").replace(/^_assets\//, "");
+            if (clean && img.getAttribute("src") !== `../routes/_assets/${clean}`) {
+              img.setAttribute("src", `../routes/_assets/${clean}`);
+            }
+          }
+        };
+        const mount = $("vditor-mount");
+        if (mount) {
+          fixImgs(mount);
+          const mo = new MutationObserver(() => fixImgs(mount));
+          mo.observe(mount, { childList: true, subtree: true, attributes: true, attributeFilter: ["src"] });
+        }
+      },
     });
   },
 };
@@ -695,20 +740,33 @@ const Attach = {
     Editor.insert(embeddable ? `![](${rel})` : `[${rel.split("/").pop()}](${rel})`);
     toast("✓ 已插入附件", 2500);
   },
-  // 上传：支持多选，逐个独立成败
+  // 上传：支持多选，逐个独立成败。
+  // 走已有的 POST /asset/upload（FormData），不另造 base64 路由——
+  // base64 + Array.from 会把 1MB 图片变成 100 万个数字的 JSON 数组，请求直接垮。
+  // 那条路由返回 { path }（没有 ok 字段），所以判据是 path 而不是 ok。
   async upload(fileList) {
     const files = Array.from(fileList || []);
     if (!files.length) return;
+    // 单个文件上限：和文件管理器保持一致（后端也会再拦一次）
+    const MAX = 20 * 1024 * 1024;
+    const tooBig = files.filter((f) => f.size > MAX);
+    if (tooBig.length) {
+      toast(`❌ ${tooBig[0].name} 超过 20MB，请改用文件管理器上传`, 5000);
+      return;
+    }
+    // 上传到当前所在层（filesSel 为空 = 库根资源目录）
+    const sub = filesSel ? filesSel.replace(/^_assets\//, "") : "";
     let okN = 0;
     const errs = [];
     for (const f of files) {
       try {
-        const buf = new Uint8Array(await f.arrayBuffer());
-        // 上传到当前所在层（filesSel 为空 = 库根资源目录）
-        const sub = filesSel ? filesSel.replace(/^_assets\//, "") : "";
-        const r = await API.post("/assets/upload", { name: f.name, sub, bytes: Array.from(buf) });
-        if (r.ok) { okN++; this.insertPath(r.path, false, guessTypeOf(f.name)); }
-        else errs.push(`${f.name}：${r.error}`);
+        const fd = new FormData();
+        fd.append("file", f, f.name);
+        fd.append("subdir", sub);
+        const res = await hana.api.fetch("/asset/upload", { method: "POST", body: fd });
+        const j = await res.json();
+        if (j && j.path) { okN++; this.insertPath(j.path, false, guessTypeOf(f.name)); }
+        else errs.push(`${f.name}：${j?.error || "上传失败"}`);
       } catch (err) { errs.push(`${f.name}：${err?.message || err}`); }
     }
     if (okN) toast(`✓ 已上传并插入 ${okN} 个附件`, 3500);
@@ -1929,7 +1987,7 @@ function renderFiles() {
     });
     row.addEventListener("dblclick", () => {
       if (isDir) loadFilesTo(fp);
-      else openAssetFile(fp);
+      else previewAsset(fp, filesItems.find((x) => x.path === fp));
     });
     row.addEventListener("contextmenu", (ev) => {
       ev.preventDefault();
@@ -2205,7 +2263,65 @@ async function deleteAssetFlow(fp, isDir) {
   await loadCategories();
 }
 
-// 打开库内文件：iframe 读不到 file://，交给宿主
+// 面板内预览。双击文件走这里；「用系统应用打开」仍走 openAssetFile。
+// 资源 URL 统一走 /_assets/ 前缀（routes 里 /asset/* 与 /_assets/* 都注册了）。
+async function previewAsset(fp, meta) {
+  const name = fp.split("/").pop();
+  const type = meta?.type || guessTypeOf(name);
+  const size = typeof meta?.size === "number" ? fmtSize(meta.size) : "";
+  const url = `../routes/_assets/${fp.replace(/^_assets\//, "")}`;
+  const head = `<div class="fp-head"><span class="fp-ic">${icon(TYPE_ICONS[type] || "file", 18)}</span>` +
+    `<span class="fp-name" title="${escapeAttr(fp)}">${escapeHtml(name)}</span>` +
+    `<span class="fp-meta">${escapeHtml(TYPE_LABEL[type] || "文件")}${size ? ` · ${size}` : ""}</span></div>`;
+
+  let body = "";
+  if (type === "image") {
+    body = `<div class="fp-img-wrap"><img class="fp-img" src="${escapeAttr(url)}" alt="${escapeAttr(name)}"></div>`;
+  } else if (type === "video") {
+    body = `<video class="fp-video" src="${escapeAttr(url)}" controls preload="metadata"></video>`;
+  } else if (type === "audio") {
+    body = `<div class="fp-audio"><div class="fp-audio-ic">${icon("audio", 40)}</div>` +
+      `<audio src="${escapeAttr(url)}" controls preload="metadata"></audio></div>`;
+  } else if (type === "text" || type === "md" || /\.(md|txt|markdown|json|csv|log|js|mjs|css|html)$/i.test(name)) {
+    // 文本类：拉回来渲染。md 用 renderMarkdown（含 ![[资源]] 卡片），纯文本 <pre>
+    body = `<div class="fp-text" id="pv-text"><div class="muted fp-loading">正在读取…</div></div>`;
+  } else if (type === "pdf") {
+    body = `<iframe class="fp-pdf" src="${escapeAttr(url)}" title="${escapeAttr(name)}"></iframe>`;
+  } else {
+    // 诚实降级：面板里画不出来，给图标和系统打开入口
+    body = `<div class="fp-none"><div class="fp-none-ic">${icon(TYPE_ICONS[type] || "file", 46)}</div>` +
+      `<p class="muted">这种文件没法在面板里直接看。</p></div>`;
+  }
+
+  const dlg = dialog({
+    title: `👁 预览`,
+    bodyHtml: `<div class="fprev">${head}<div class="fp-body">${body}</div></div>`,
+    okText: "关闭",
+    onOk: () => {},
+    onMount: () => {
+      const box = $("pv-text");
+      if (box) {
+        // 拉文本：失败就显示错误，不假装空文件
+        fetch(url).then((r) => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.text();
+        }).then((txt) => {
+          // 限长：超大文本全渲染会把面板卡死
+          const MAX = 200000;
+          const clipped = txt.length > MAX ? txt.slice(0, MAX) + "\n…（文件过长，已截断）" : txt;
+          box.innerHTML = (/\.(md|markdown)$/i.test(name))
+            ? `<div class="fp-md">${renderMarkdown(clipped)}</div>`
+            : `<pre class="fp-pre">${escapeHtml(clipped)}</pre>`;
+          bindRefCards(box);
+        }).catch((err) => {
+          box.innerHTML = `<div class="fp-err">❌ 读取失败：${escapeHtml(err?.message || String(err))}</div>`;
+        });
+      }
+    },
+  });
+  return dlg;
+}
+
 async function openAssetFile(fp) {
   try {
     await hana.ui.external.open({ url: `../routes/_assets/${fp.replace(/^_assets\//, "")}` });
@@ -3130,43 +3246,15 @@ function renderHomeEntries(boxId, items, emptyText, extra) {
     box.innerHTML = `<li class="muted empty-hint">${escapeHtml(emptyText)}</li>`;
     return;
   }
-  box.innerHTML = items.map((e) => {
-    const cover = coverUrlOf(e);
-    // 分类配一个稳定色：同一分类在同一屏里颜色一致，扫一眼能分组
-    const hue = catHue(e.category);
-    const initial = (e.title || "?").trim().slice(0, 1) || "?";
-    return `<li class="hgrid" data-id="${e.id}" style="--hue:${hue}">
-      ${cover
-        ? `<img class="hg-img" src="${escapeAttr(cover)}" loading="lazy" alt="">
-           <span class="hg-veil"></span>`
-        : `<span class="hg-fallback" aria-hidden="true">${escapeHtml(initial)}</span>`}
-      <span class="hg-cap">
-        <span class="hg-t">${escapeHtml(e.title)}</span>
-        <span class="hg-c">${escapeHtml(e.category)}${extra ? ` · ${escapeHtml(extra(e))}` : ""}</span>
-      </span>
-    </li>`;
-  }).join("");
+  box.innerHTML = items.map((e) =>
+    `<li class="hl" data-id="${e.id}">
+      <span class="hl-t">${escapeHtml(e.title)}</span>
+      <span class="hl-c">${escapeHtml(e.category)}</span>
+      ${extra ? `<span class="hl-d">${escapeHtml(extra(e))}</span>` : ""}
+    </li>`).join("");
   for (const li of box.querySelectorAll(".hl")) {
     li.addEventListener("click", async () => { showListView(); await selectCategory(""); await selectEntry(li.dataset.id); });
   }
-}
-
-// 条目封面图：资源引用走 _assets 路由，外链封面直接用原 URL。
-// 拿不到就返回空串，由调用方画色块兜底。
-function coverUrlOf(e) {
-  const c = e.cover || e.meta?.cover;
-  if (!c) return "";
-  if (/^(https?:|data:)/.test(c)) return c;
-  const rel = String(c).replace(/^\.?\//, "");
-  return rel.startsWith("_assets/") ? `../routes/_assets/${rel.slice(8)}` : `../routes/asset/${rel}`;
-}
-
-// 分类 → 色相（0-360）。用简单哈希，保证同名分类永远是同一个色。
-function catHue(name) {
-  let h = 0;
-  const s = String(name || "");
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
-  return h;
 }
 
 $("btn-home").addEventListener("click", showHome);
