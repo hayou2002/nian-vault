@@ -767,3 +767,66 @@ button.ai-pill:hover {
 .fgrid.cb-on .frow-cb, .fgrid.picked .frow-cb { width: 15px; height: 15px; }
 /* 多选开关按钮的激活态 */
 .files-head .small.active, .files-view-switch .small.active { background: var(--c-accent); color: #fff; border-color: var(--c-accent); }
+
+/* ===== 主页大封面九宫格 ===== */
+/* 容器：home-* 那几个 <ul> 一律按九宫格排。方块比例锁 1:1，缩放不变形。 */
+#home-inbox, #home-pinned, #home-recent {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+  list-style: none; margin: 0; padding: 0;
+}
+.hgrid { position: relative; aspect-ratio: 1 / 1; border-radius: 10px; overflow: hidden;
+  background: hsl(var(--hue, 220) 32% 92%); border: 1px solid var(--c-border);
+  cursor: pointer; transition: transform .14s ease, box-shadow .14s ease; }
+.hgrid:hover { transform: translateY(-2px); box-shadow: 0 6px 16px rgb(0 0 0 / .13); z-index: 1; }
+.hg-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+/* 图片上压一层暗纱，保证白字标题在任何底色上都读得清 */
+.hg-veil { position: absolute; inset: 0;
+  background: linear-gradient(to top, rgb(0 0 0 / .62) 0%, rgb(0 0 0 / .18) 42%, rgb(0 0 0 / 0) 70%); }
+/* 无封面：分类色块 + 首字。色相来自分类名哈希，同名分类同色 */
+.hg-fallback { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 30px; font-weight: 600; color: #fff; opacity: .82;
+  background: linear-gradient(150deg, hsl(var(--hue, 220) 46% 58%), hsl(var(--hue, 220) 40% 44%)); }
+/* 标题：默认收起，悬停/聚焦浮出——默认态干净，需要时一定有 */
+.hg-cap { position: absolute; left: 0; right: 0; bottom: 0; padding: 6px 7px 5px;
+  display: flex; flex-direction: column; gap: 1px; color: #fff;
+  background: linear-gradient(to top, rgb(0 0 0 / .74), rgb(0 0 0 / 0));
+  opacity: 0; transform: translateY(4px); transition: opacity .14s ease, transform .14s ease; }
+.hgrid:hover .hg-cap, .hgrid:focus-visible .hg-cap { opacity: 1; transform: none; }
+.hg-t { font-size: 12px; font-weight: 600; line-height: 1.25;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.hg-c { font-size: 10.5px; opacity: .86; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 键盘可达：九宫格是 li，给个可见焦点环 */
+.hgrid:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 2px; }
+/* 窄面板时退化成两列，别挤成一团 */
+@media (max-width: 380px) {
+  #home-inbox, #home-pinned, #home-recent { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ===== 编辑器「📎 附件」面板 ===== */
+.attach-bar { display: flex; align-items: center; gap: 8px; margin: 4px 0 6px; }
+.attach-tab { font: inherit; font-size: 12.5px; padding: 4px 10px; cursor: pointer;
+  border: 1px solid var(--c-border); border-radius: 99px; background: var(--c-bg); color: var(--c-text); }
+.attach-tab:hover { border-color: var(--c-accent); color: var(--c-accent); }
+.attach-tab[aria-expanded="true"] { background: var(--c-accent); color: #fff; border-color: var(--c-accent); }
+.attach-hint { font-size: 11px; color: var(--c-muted); }
+
+.attach-panel { border: 1px solid var(--c-border); border-radius: var(--r);
+  background: var(--c-bg); padding: 8px; margin-bottom: 6px; }
+.attach-acts { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.attach-q { flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 4px 8px;
+  border: 1px solid var(--c-border); border-radius: 6px; background: var(--c-bg); color: var(--c-text); }
+.attach-q:focus { outline: none; border-color: var(--c-accent); }
+
+/* 资源清单：一列可点按钮，高到 180px 自己滚，不把编辑器顶飞 */
+.attach-list { max-height: 180px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.attach-item { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left;
+  font: inherit; font-size: 12px; padding: 4px 6px; cursor: pointer;
+  border: none; border-radius: 6px; background: none; color: var(--c-text); }
+.attach-item:hover { background: var(--c-accent-light); }
+.ai-ic { flex: none; display: inline-flex; color: var(--c-muted); }
+.ai-n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-t { flex: none; font-size: 10.5px; color: var(--c-muted);
+  border: 1px solid var(--c-border); border-radius: 99px; padding: 0 6px; }
+.attach-loading, .attach-empty { padding: 12px 4px; font-size: 12px; text-align: center; }
+.attach-foot { display: flex; align-items: center; justify-content: space-between;
+  margin-top: 6px; font-size: 11px; }

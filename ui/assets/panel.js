@@ -625,6 +625,119 @@ const Editor = {
     });
   },
 };
+// ---------------- ④ 附件标签页 ----------------
+// 编辑器里的资源入口：上传新文件、或插入库里已有的资源。
+// 插入形态由资源类型决定：
+//   图片      → ![备注](路径)   直接显示
+//   视频/音频 → ![备注](路径)   由 __refCard 渲染成播放器
+//   其他      → [名字](路径)    普通链接
+// 引用库内资源一律用 ![[名]] / [名](路径) 的真实路径，不复制文件。
+const Attach = {
+  open: false,
+  items: [],
+  // 面板开关
+  toggle(force) {
+    this.open = force === undefined ? !this.open : !!force;
+    const p = $("attach-panel");
+    const b = $("btn-attach");
+    if (p) p.hidden = !this.open;
+    if (b) b.setAttribute("aria-expanded", this.open ? "true" : "false");
+    if (this.open) this.refresh();
+  },
+  // 拉库内资源清单（复用 AI 那条索引，带缓存）
+  async refresh() {
+    const box = $("attach-list");
+    const stat = $("attach-stat");
+    if (!box) return;
+    box.innerHTML = `<div class="muted attach-loading">正在读取库内资源…</div>`;
+    let items = [];
+    try {
+      const r = await API.get("/assets/index");
+      items = r.ok ? (r.items || []) : [];
+    } catch { items = []; }
+    this.items = items;
+    if (stat) stat.textContent = `库内共 ${items.length} 项资源`;
+    this.render();
+  },
+  render() {
+    const box = $("attach-list");
+    if (!box) return;
+    const q = ($("attach-q")?.value || "").trim().toLowerCase();
+    const list = q ? this.items.filter((x) => x.name.toLowerCase().includes(q)) : this.items;
+    if (!list.length) {
+      box.innerHTML = `<div class="muted attach-empty">${q ? "没有匹配的资源" : "库里还没有资源，先上传一个"}</div>`;
+      return;
+    }
+    box.innerHTML = list.slice(0, 200).map((x) => {
+      const ic = x.isDir ? "folder" : (TYPE_ICONS[x.type] || "file");
+      return `<button type="button" class="attach-item" data-p="${escapeAttr(x.path)}" data-dir="${x.isDir ? "1" : "0"}" data-type="${escapeAttr(x.type || "")}">` +
+        `<span class="ai-ic">${icon(ic, 16)}</span>` +
+        `<span class="ai-n" title="${escapeAttr(x.path)}">${escapeHtml(x.name)}</span>` +
+        `<span class="ai-t">${escapeHtml(x.isDir ? "文件夹" : TYPE_LABEL[x.type] || "文件")}</span>` +
+        `</button>`;
+    }).join("");
+    for (const b of box.querySelectorAll(".attach-item")) {
+      b.addEventListener("click", () => this.insertPath(b.dataset.p, b.dataset.dir === "1", b.dataset.type));
+    }
+  },
+  // 把一条资源插进正文光标处
+  insertPath(rel, isDir, type) {
+    if (!rel) return;
+    if (isDir) {
+      // 文件夹没有"嵌入"可言，插入成双链形式，点击能跳到文件管理器
+      Editor.insert(`[[${rel.split("/").pop()}]]`);
+      toast("✓ 已插入文件夹引用", 2500);
+      return;
+    }
+    // 用真实相对路径（_assets/...），不用 ![[名]]——
+    // 同名文件多个时 ![[名]] 会猜错，路径是确定的。
+    const embeddable = type === "image" || type === "video" || type === "audio";
+    Editor.insert(embeddable ? `![](${rel})` : `[${rel.split("/").pop()}](${rel})`);
+    toast("✓ 已插入附件", 2500);
+  },
+  // 上传：支持多选，逐个独立成败
+  async upload(fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    let okN = 0;
+    const errs = [];
+    for (const f of files) {
+      try {
+        const buf = new Uint8Array(await f.arrayBuffer());
+        // 上传到当前所在层（filesSel 为空 = 库根资源目录）
+        const sub = filesSel ? filesSel.replace(/^_assets\//, "") : "";
+        const r = await API.post("/assets/upload", { name: f.name, sub, bytes: Array.from(buf) });
+        if (r.ok) { okN++; this.insertPath(r.path, false, guessTypeOf(f.name)); }
+        else errs.push(`${f.name}：${r.error}`);
+      } catch (err) { errs.push(`${f.name}：${err?.message || err}`); }
+    }
+    if (okN) toast(`✓ 已上传并插入 ${okN} 个附件`, 3500);
+    if (errs.length) toast(`❌ ${errs.length} 个失败：${errs[0]}`, 5000);
+    this.refresh();
+  },
+};
+
+// 按扩展名猜类型（上传前就要决定插入成嵌入还是链接）
+function guessTypeOf(name) {
+  const ext = String(name).split(".").pop().toLowerCase();
+  if (["png","jpg","jpeg","gif","webp","bmp","svg","avif"].includes(ext)) return "image";
+  if (["mp4","webm","mov","mkv","avi","m4v"].includes(ext)) return "video";
+  if (["mp3","wav","ogg","m4a","flac","aac"].includes(ext)) return "audio";
+  if (["md","txt","markdown"].includes(ext)) return "text";
+  if (["pdf"].includes(ext)) return "pdf";
+  return "file";
+}
+
+// 接线
+$("btn-attach").addEventListener("click", () => Attach.toggle());
+$("btn-attach-upload").addEventListener("click", () => $("attach-file").click());
+$("attach-file").addEventListener("change", (ev) => { Attach.upload(ev.target.files); ev.target.value = ""; });
+$("btn-attach-refresh").addEventListener("click", () => Attach.refresh());
+let _attachQT = null;
+$("attach-q").addEventListener("input", (ev) => {
+  clearTimeout(_attachQT);
+  _attachQT = setTimeout(() => Attach.render(), 120);
+});
 Editor.init();
 
 // ---------------- [[ 双链自动补全 ----------------
@@ -3017,15 +3130,43 @@ function renderHomeEntries(boxId, items, emptyText, extra) {
     box.innerHTML = `<li class="muted empty-hint">${escapeHtml(emptyText)}</li>`;
     return;
   }
-  box.innerHTML = items.map((e) =>
-    `<li class="hl" data-id="${e.id}">
-      <span class="hl-t">${escapeHtml(e.title)}</span>
-      <span class="hl-c">${escapeHtml(e.category)}</span>
-      ${extra ? `<span class="hl-d">${escapeHtml(extra(e))}</span>` : ""}
-    </li>`).join("");
+  box.innerHTML = items.map((e) => {
+    const cover = coverUrlOf(e);
+    // 分类配一个稳定色：同一分类在同一屏里颜色一致，扫一眼能分组
+    const hue = catHue(e.category);
+    const initial = (e.title || "?").trim().slice(0, 1) || "?";
+    return `<li class="hgrid" data-id="${e.id}" style="--hue:${hue}">
+      ${cover
+        ? `<img class="hg-img" src="${escapeAttr(cover)}" loading="lazy" alt="">
+           <span class="hg-veil"></span>`
+        : `<span class="hg-fallback" aria-hidden="true">${escapeHtml(initial)}</span>`}
+      <span class="hg-cap">
+        <span class="hg-t">${escapeHtml(e.title)}</span>
+        <span class="hg-c">${escapeHtml(e.category)}${extra ? ` · ${escapeHtml(extra(e))}` : ""}</span>
+      </span>
+    </li>`;
+  }).join("");
   for (const li of box.querySelectorAll(".hl")) {
     li.addEventListener("click", async () => { showListView(); await selectCategory(""); await selectEntry(li.dataset.id); });
   }
+}
+
+// 条目封面图：资源引用走 _assets 路由，外链封面直接用原 URL。
+// 拿不到就返回空串，由调用方画色块兜底。
+function coverUrlOf(e) {
+  const c = e.cover || e.meta?.cover;
+  if (!c) return "";
+  if (/^(https?:|data:)/.test(c)) return c;
+  const rel = String(c).replace(/^\.?\//, "");
+  return rel.startsWith("_assets/") ? `../routes/_assets/${rel.slice(8)}` : `../routes/asset/${rel}`;
+}
+
+// 分类 → 色相（0-360）。用简单哈希，保证同名分类永远是同一个色。
+function catHue(name) {
+  let h = 0;
+  const s = String(name || "");
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
+  return h;
 }
 
 $("btn-home").addEventListener("click", showHome);

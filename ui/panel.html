@@ -12,9 +12,9 @@
     <aside class="side" id="side">
       <div class="side-head">
         <span class="brand">念念收藏夹</span>
-        <button class="icon-btn" id="btn-refresh" title="重新扫描库目录">↻</button>
+        <button class="icon-btn" id="btn-refresh" title="重新扫描库目录" title="刷新">↻ 刷新</button>
         <div class="menu-wrap">
-          <button class="icon-btn" id="btn-side-menu" title="新建收藏 / 存储位置 / 备份 / 设置" aria-haspopup="true">⋯</button>
+          <button class="icon-btn" id="btn-side-menu" title="新建收藏 / 存储位置 / 备份 / 设置" aria-haspopup="true" title="更多操作">⋯ 更多</button>
           <div class="more-menu side-menu" id="side-menu" hidden>
             <div class="menu-sec">新建</div>
             <button id="mi-new">＋ 新建收藏</button>
@@ -37,7 +37,7 @@
       <button class="cat cat-stage" id="btn-clip-stage" title="跳到首页「待处理」区（收件箱 + 待确认收藏）"><span>📥 待处理</span><span class="badge" id="clip-stage-count" hidden>0</span></button>
       <div class="side-cats-head">
         <span class="label">分类</span>
-        <button class="icon-btn" id="btn-new-cat" title="新建分类">＋</button>
+        <button class="icon-btn" id="btn-new-cat" title="新建分类" title="新建">＋ 新建</button>
       </div>
       <nav id="cats" class="cat-rows"></nav>
     </aside>
@@ -88,7 +88,7 @@
     <!-- 卡片墙：点分类标题或点标签，把相关收藏横向铺在这里 -->
     <section class="wall" id="wall" hidden>
       <div class="wall-head">
-        <button class="icon-btn" id="btn-wall-back" title="返回总览">←</button>
+        <button class="icon-btn" id="btn-wall-back" title="返回总览" title="返回">← 返回</button>
         <div class="wall-title">
           <h2 id="wall-name"></h2>
           <span class="muted" id="wall-count"></span>
@@ -131,8 +131,8 @@
         <button class="small" id="btn-files-pick" title="多选模式：开/关行首复选框">☑ 多选</button>
         <button class="small" id="btn-files-ai" title="让 AI 看看这些文件该放哪、叫什么（只给建议，不动文件）">🤖 AI 整理</button>
         <span class="files-view-switch">
-          <button class="small" id="btn-files-list" title="列表视图">☰</button>
-          <button class="small" id="btn-files-grid" title="图标视图">▦</button>
+          <button class="small" id="btn-files-list" title="列表视图" title="列表视图">☰ 列表</button>
+          <button class="small" id="btn-files-grid" title="图标视图" title="平铺视图">▦ 平铺</button>
         </span>
       </div>
       <!-- 面包屑：_assets / 图片 / 2026 -->
@@ -163,7 +163,7 @@
           <div class="meta" id="v-meta"></div>
         </div>
         <div class="grow"></div>
-        <button class="small" id="btn-toc-toggle" title="打开本文目录" hidden>☷ 目录</button>
+        <button class="small" id="btn-toc-toggle" title="打开本文目录" hidden title="展开目录">☷ 目录</button>
         <button class="small ai-pill" id="btn-ai-entry" title="提炼摘要、打标签、提取待办与发现关联">✨ AI</button>
         <button class="small" id="btn-toggle">编辑</button>
         <div class="more-wrap">
@@ -193,10 +193,10 @@
           </div>
         </div>
         <aside class="toc" id="toc" hidden>
-          <div class="toc-title">目录 <button class="link-btn" id="btn-toc-fold" title="收起目录">◂</button></div>
+          <div class="toc-title">目录 <button class="link-btn" id="btn-toc-fold" title="收起目录" title="上一页">◂ 上一页</button></div>
           <ul id="toc-list"></ul>
         </aside>
-        <button class="icon-btn toc-unfold" id="btn-toc-unfold" title="展开目录" hidden>▸</button>
+        <button class="icon-btn toc-unfold" id="btn-toc-unfold" title="展开目录" hidden title="下一页">▸ 下一页</button>
       </div>
       <form id="edit" class="edit" hidden>
         <input id="e-title" placeholder="标题（可留空，自动取第一行或点下方 AI 生成）">
@@ -210,6 +210,23 @@
         <textarea id="e-body" hidden></textarea><!-- Vditor 不可用时（含测试环境）的降级载体 -->
         <div class="edit-hint" id="edit-hint">
           提示：输入 <code>[[</code> 补全双链；将左侧树节点拖入编辑器可插入双链；按 <code>Ctrl+S</code> 快速保存。
+        </div>
+        <!-- ④ 附件标签页：上传 / 引用库内已有资源 / 本篇已引用的 -->
+        <div class="attach-bar">
+          <button type="button" class="attach-tab" id="btn-attach" aria-expanded="false">📎 附件</button>
+          <span class="attach-hint">上传文件、或插入库内已有资源</span>
+        </div>
+        <div class="attach-panel" id="attach-panel" hidden>
+          <div class="attach-acts">
+            <button type="button" class="small primary" id="btn-attach-upload">⬆ 上传文件</button>
+            <input type="file" id="attach-file" multiple hidden>
+            <input type="text" id="attach-q" placeholder="筛选资源名…" class="attach-q">
+          </div>
+          <div class="attach-list" id="attach-list"></div>
+          <div class="attach-foot">
+            <span class="muted" id="attach-stat"></span>
+            <button type="button" class="link-btn" id="btn-attach-refresh">↻ 刷新</button>
+          </div>
         </div>
         <div id="vditor-mount"></div>
         <div class="actions">

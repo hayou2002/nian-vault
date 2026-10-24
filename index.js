@@ -39,6 +39,51 @@ function guessType(p) {
   return "file";
 }
 
+// 从 hook 入参里挖「这次消息带了哪些附件」。
+// 字段名没有文档，把所有见过/可能的名字都探一遍：
+//   inv.attachments / inv.files / inv.sessionFiles / inv.attachedFiles
+// 每条归一成 { name, kind, path?, url?, mime? }。挖不到就返回空数组。
+// 绝不抛异常：猜错字段名只该让这个功能不触发，不该让 hook 挂掉。
+function extractAttachments(inv) {
+  const out = [];
+  const push = (raw) => {
+    if (!raw) return;
+    const name = String(raw.name || raw.fileName || raw.filename || raw.label || raw.title || "").trim();
+    if (!name) return;
+    const kind = String(raw.kind || raw.type || raw.mimeType || raw.mime || "").toLowerCase();
+    out.push({
+      name,
+      kind,
+      path: raw.path || raw.filePath || raw.localPath || raw.uri || null,
+      url: raw.url || raw.href || null,
+      size: typeof raw.size === "number" ? raw.size : null,
+      mime: raw.mimeType || raw.mime || null,
+    });
+  };
+  for (const key of ["attachments", "files", "sessionFiles", "attachedFiles", "resources"]) {
+    const arr = inv?.[key];
+    if (Array.isArray(arr)) arr.forEach(push);
+  }
+  // 去重：同一个文件被多个字段名带上时只留一条
+  const seen = new Set();
+  return out.filter((a) => {
+    const k = a.path || a.url || a.name;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
+// 附件分类：图片 / 视频 / 音频 / 其他文件。决定横幅文案和入库方式。
+function classifyAttachment(a) {
+  const ext = (a.name.match(/\.(\w{1,8})$/) || [])[1]?.toLowerCase() || "";
+  const k = a.kind || "";
+  if (/^image\//.test(k) || ["png","jpg","jpeg","gif","webp","bmp","svg","avif"].includes(ext)) return "image";
+  if (/^video\//.test(k) || ["mp4","webm","mov","mkv","avi","m4v","flv"].includes(ext)) return "video";
+  if (/^audio\//.test(k) || ["mp3","wav","ogg","m4a","flac","aac"].includes(ext)) return "audio";
+  return "file";
+}
+
 function isInside(child, parent) {
   const rel = path.relative(path.resolve(parent), path.resolve(child));
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
@@ -682,19 +727,34 @@ const deliverNotice = async (args, payload) => {
       const text = String(inv.text || "").trim();
       const hasUrl = /https?:\/\/[^\s]+/i.test(text);
       const isLongNote = text.length >= 180 && (text.includes("\n") || /笔记|总结|配置|步骤|课标|台账/.test(text));
-      if ((hasUrl || isLongNote) && inv.session?.sessionPath && sdk.inputBanner?.set) {
+      // 附件：粘贴的图片、拖入的视频、贴的本地文件。
+      // 有附件就优先走附件分支——它比「长文本」更明确是用户想留的东西。
+      const atts = extractAttachments(inv);
+      const attKinds = [...new Set(atts.map(classifyAttachment))];
+      if (atts.length && inv.session?.sessionPath && sdk.inputBanner?.set) {
         try {
+          const kindWord = { image: "图片", video: "视频", audio: "音频", file: "文件" }[attKinds[0]] || "文件";
+          const more = atts.length > 1 ? ` 等 ${atts.length} 个` : "";
+          const names = atts.slice(0, 2).map((a) => a.name).join("、");
           sdk.inputBanner.set({
             sessionPath: inv.session.sessionPath,
             bannerId: "nv-collect-hint",
-            text: hasUrl ? "💡 检测到消息中包含网页/视频链接，是否收入「念念收藏夹」？" : "💡 检测到长篇干货内容，是否让 AI 整理收入「念念收藏夹」？",
+            text: `📎 检测到消息中附了${kindWord}（${names}${more}），是否收入「念念收藏夹」？`,
             buttons: [
               {
-                id: "clip-now",
-                title: "✨ AI 整理入库",
+                id: "attach-file",
+                title: "📦 存入资源库",
                 action: {
                   kind: "post-message",
-                  text: "请把上面这段内容（含链接或要点）调用 nian_vault_save 整理收藏进念念收藏夹，自动打标签并归入合适分类。",
+                  text: `请把本条消息附带的文件（${names}${more}）用 nian_vault_save_file 收进念念收藏夹：path 填文件的本地绝对路径，title 起个易懂的名字，tags 按内容给 2~4 个，note 写一句话说明这是什么。只做引用收藏，不要复制或移动原文件。`,
+                },
+              },
+              {
+                id: "attach-note",
+                title: "📝 存资源并记一笔",
+                action: {
+                  kind: "post-message",
+                  text: `请把本条消息附带的文件（${names}${more}）收进念念收藏夹并写一条笔记引用它：先用 nian_vault_save_file 存引用（path 用本地绝对路径，title 起易懂名，tags 2~4 个，note 一句话说明），再用 nian_vault_save 写一条笔记，正文里用 ![](资源的本地路径) 嵌入这个${kindWord}，分类按内容自动判断。`,
                 },
               },
             ],
