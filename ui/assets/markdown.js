@@ -1,5 +1,19 @@
 // 轻量 Markdown 渲染器：先整体转义 HTML，再做语法替换，因此不会执行内容里的脚本。
-// 支持：标题、段落、粗体/斜体/删除线、行内代码、代码块、引用、有序/无序/任务列表、表格、分割线、链接、图片。
+// 支持：标题、段落、粗体/斜体/删除线、行内代码、代码块、引用、有序/无序/任务列表、表格、分割线、链接、图片、![[资源]] 卡片。
+
+// ![[资源名]] 的卡片渲染钩子：由宿主页面注入（window.__refCard）。
+// markdown.js 不依赖数据层，注入方负责查 _assets 清单并产出 HTML；
+// 没注入或查不到时，走"文件不存在"的诚实占位。
+function refCard(name, alias) {
+  const fn = (typeof window !== "undefined" && window.__refCard) || null;
+  if (typeof fn !== "function") return null;
+  try {
+    const html = fn(name, alias);
+    return html || null;
+  } catch {
+    return null;
+  }
+}
 
 function esc(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -22,6 +36,15 @@ function inline(src) {
   let s = String(src).replace(/`([^`]+)`/g, (_, c) => { codes.push(c); return `\u0000${codes.length - 1}\u0000`; });
   s = esc(s);
   // 双向链接 [[条目标题]]、[[标题|别名]]、[[标题#锚点]]
+  // ![[资源名]] → 资源卡片。必须在 [[wikilink]] 之前替换，
+  // 否则 [[名]] 会先被吃掉，只剩一个光秃秃的 !。
+  // 卡片内容由 refCard 提供（前端注入，避免 markdown.js 依赖数据层）。
+  s = s.replace(/!\[\[([^\]\n|]+?)(?:\|([^\]\n]+?))?(?:#([^\]\n]+?))?\]\]/g, (_, name, alias) => {
+    const card = typeof refCard === "function" ? refCard(name.trim(), (alias || "").trim()) : null;
+    if (card) return card;
+    // 找不到文件：给一个诚实的占位，不要假装有
+    return `<span class="ref-missing" title="库里没有这个文件">📄 ${esc(name.trim())}（文件不存在）</span>`;
+  });
   s = s.replace(/\[\[([^\]\n|]+?)(?:\|([^\]\n]+?))?(?:#([^\]\n]+?))?\]\]/g, (_, title, alias, anchor) => {
     const display = alias || (anchor ? `${title}#${anchor}` : title);
     return `<a href="#" data-wikilink data-title="${esc(title.trim())}" ${anchor ? `data-anchor="${esc(anchor)}"` : ""}>${display}</a>`;

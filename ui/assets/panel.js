@@ -22,7 +22,9 @@ let state = {
   root: "",
 };
 
-const TYPE_ICONS = { note: "note", text: "text", link: "link", image: "image", video: "video", audio: "audio", file: "file", folder: "folder", memory: "memory", experience: "experience" };
+const TYPE_ICONS = { note: "note", text: "text", link: "link", image: "image", video: "video", audio: "note", file: "file", folder: "folder", memory: "memory", experience: "experience" };
+// 图标库没有 audio，用 note 顶着；显示时另外给文字区分
+const TYPE_LABEL = { note: "笔记", text: "文本", link: "网页", image: "图片", video: "视频", audio: "音频", file: "文件", folder: "文件夹", memory: "记忆", experience: "经验" };
 // 与 lib/vault.js 的 EXT_TYPE 保持一致：收录时靠它判定类型
 const EXT_TYPE = {
   png: "image", jpg: "image", jpeg: "image", gif: "image", webp: "image", bmp: "image", svg: "image", ico: "image",
@@ -147,6 +149,10 @@ async function loadCategories() {
   await refreshTree();
   renderCategories();
 }
+
+// 资源索引也在这里刷：![[名]] 卡片要靠它查文件在不在。
+// 失败不影响主流程（卡片会显示"文件不存在"，但不该让面板白屏）。
+refreshAssetIndex().catch(() => {});
 
 function renameCategory(from) {
   const cur = state.categories.find((c) => c.name === from);
@@ -518,6 +524,8 @@ async function selectEntry(id) {
     $("v-title").textContent = "";
     $("v-meta").innerHTML = "";
     $("v-body").innerHTML = "";
+    $("ref-view").hidden = true;
+    $("ref-view").innerHTML = "";
     appRoot.classList.remove("show-detail");
     return;
   }
@@ -529,7 +537,7 @@ async function selectEntry(id) {
   renderMoreMenu(e);
   API.post("/entry/opened", { id: e.id }).catch(() => {});
   $("v-meta").innerHTML =
-    `<strong>${escapeHtml(e.category)}</strong> · ${typeIcon(e.type)} ${escapeHtml(e.type)} · ${String(e.updated || "").slice(0, 10)}` +
+    `<strong>${escapeHtml(e.category)}</strong> · ${typeIcon(e.type)} ${escapeHtml(TYPE_LABEL[e.type] || e.type)} · ${String(e.updated || "").slice(0, 10)}` +
     (e.parentTitle ? renderMarkdown(` · 属于 [[${e.parentTitle}]]`).replace(/^<p>|<\/p>$/g, "") : "") +
     (e.source ? ` · 来源 ${
       /^(https?:\/\/)/i.test(e.source)
@@ -545,7 +553,9 @@ async function selectEntry(id) {
       openWall("tag", tagEl.dataset.filterTag);
     });
   }
+  renderRefView(e);
   $("v-body").innerHTML = renderMarkdown(e.content);
+  bindRefCards($("v-body"));
   show($("detail-hint"), false);
   // ★ Bug #1 修复：必须在 v-body.innerHTML 渲染完成后再绑定任务复选框点击事件
   wireViewTasks(e);
@@ -789,6 +799,8 @@ async function updateEntry() {
 
 // ---------------- 事件绑定 ----------------
 $("mi-new").addEventListener("click", () => { $("side-menu").hidden = true; newEntry(); });
+$("mi-pick-file").addEventListener("click", () => { $("side-menu").hidden = true; pickAndCollect(); });
+$("mi-pick-url").addEventListener("click", () => { $("side-menu").hidden = true; collectUrlFlow(); });
 
 async function newEntry() {
   const r = await API.post("/entry", { title: "未命名笔记", content: "", category: state.filter.category });
@@ -1584,7 +1596,446 @@ function fmtSize(n) {
   return `${(b / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
+// ---- 资源查看器：按类型给不同的展示 --------------------------------
+// 图片露大图，影音给播放器，文件夹列结构，网页给预览框。
+// 一律带「打开原件」按钮：iframe 里放不开的东西交给系统应用。
+function renderRefView(e) {
+  const box = $("ref-view");
+  if (!box) return;
+  const ref = e.ref;
+  // 非资源类或没有引用：收起，不占位
+  if (!ref || !["image", "video", "audio", "folder", "file", "link"].includes(e.type)) {
+    box.hidden = true;
+    box.innerHTML = "";
+    return;
+  }
+  box.hidden = false;
+  const openBtn = `<button class="small" data-ref-open="${escapeAttr(e.id)}">${ref.kind === "url" ? "🌐 打开网页" : "📂 打开原件"}</button>`;
+  const locLine = ref.kind === "url"
+    ? `<div class="ref-loc">${escapeHtml(ref.host || "")} · <a href="${escapeAttr(ref.target)}" target="_blank" rel="noopener noreferrer">${escapeHtml(ref.target)}</a></div>`
+    : `<div class="ref-loc">${ref.missing ? "<b class=\"ref-lost\">原件已失效或已被移动</b>" : "位置"} ${ref.target ? escapeHtml(ref.target) : ""}</div>`;
+
+  let body = "";
+  if (ref.missing) {
+    body = `<div class="ref-empty">${icon("trash", 22)}<p>找不到原件了。文件被移动、重命名或删除时会出现这个。</p><p class="muted">这条收藏的标题、标签、笔记都还在，只有链接失效。</p></div>`;
+  } else if (e.type === "image") {
+    // 库内上传的图片走 /asset 路由；本地引用的图片 iframe 读不到 file://，只能给按钮
+    if (ref.target && ref.target.startsWith("_assets/")) {
+      body = `<img class="ref-img" src="../routes/${escapeAttr(ref.target)}" alt="${escapeAttr(e.title)}">`;
+    } else {
+      body = `<div class="ref-empty">${icon("image", 22)}<p>浏览器里读不到本地图片文件，点下面的按钮用系统应用打开。</p></div>`;
+    }
+  } else if (e.type === "video" || e.type === "audio") {
+    body = `<div class="ref-empty">${icon(TYPE_ICONS[e.type] || "file", 22)}<p>${TYPE_LABEL[e.type] || "媒体"}文件在本地，${ref.size != null ? `大小 ${fmtSize(ref.size)}` : "大小未知"}。</p><p class="muted">iframe 里播放不了本地媒体文件，点下面的按钮用系统播放器打开。</p></div>`;
+  } else if (e.type === "folder") {
+    const c = ref.children || { count: 0, size: 0, byType: {}, children: [] };
+    const dist = Object.entries(c.byType || {}).sort((a, b) => b[1] - a[1])
+      .map(([t, n]) => `<span class="ref-dist-item">${icon(TYPE_ICONS[t] || "file", 13)} ${escapeHtml(t)} <b>${n}</b></span>`).join("");
+    const list = (c.children || []).slice(0, 60).map((k) =>
+      `<li><span class="ref-k-ic">${icon(TYPE_ICONS[k.type] || "file", 13)}</span><span class="ref-k-n">${escapeHtml(k.name)}</span><span class="ref-k-s">${k.size ? fmtSize(k.size) : k.count ? `${k.count} 项` : ""}</span></li>`).join("");
+    body = `<div class="ref-folder">
+      <div class="ref-folder-stat"><b>${c.count}</b> 项 · ${fmtSize(c.size || 0)}<span class="grow"></span><button class="small" data-ref-restat="${escapeAttr(e.id)}">↻ 刷新结构</button></div>
+      <div class="ref-dist">${dist}</div>
+      <ul class="ref-kids">${list || '<li class="muted">空文件夹</li>'}</ul>
+      ${(c.children || []).length > 60 ? `<p class="muted">只显示前 60 项，共 ${c.count} 项</p>` : ""}
+    </div>`;
+  } else if (e.type === "link") {
+    body = `<div class="ref-empty">${icon("link", 22)}<p>网页收藏。点下面的按钮在浏览器里打开。</p><p class="muted">这一版只存网址和域名，还不抓标题和快照。</p></div>`;
+  } else {
+    body = `<div class="ref-empty">${icon("file", 22)}<p>文件${ref.size != null ? `，大小 ${fmtSize(ref.size)}` : ""}${ref.mime ? `，${escapeHtml(ref.mime)}` : ""}。</p><p class="muted">iframe 里打不开，用下面的按钮交给系统应用。</p></div>`;
+  }
+
+  box.innerHTML =
+    `<div class="ref-head"><span class="ref-type">${icon(TYPE_ICONS[e.type] || "file", 15)}</span>` +
+    `<span class="ref-title">${escapeHtml(e.title)}</span><span class="grow"></span>${openBtn}</div>` +
+    locLine + body;
+
+  box.querySelector("[data-ref-open]")?.addEventListener("click", () => openRef(e.id));
+  box.querySelector("[data-ref-restat]")?.addEventListener("click", async (ev) => {
+    ev.target.disabled = true;
+    const r = await API.post("/ref/restat", { id: e.id });
+    ev.target.disabled = false;
+    if (!r.ok) return toast(`❌ ${r.error}`);
+    toast(`✓ 已刷新：${r.children.count} 项`);
+    await selectEntry(e.id);
+  });
+}
+
+// ---- 资源查看器 END ----
+
 // ============ 资源类收藏 END ============
+
+// ============ 文件管理器 ============
+// 列表形态而非卡片墙：文件管理要的是操作密度（重命名/删除/看引用），
+// 一屏 20+ 行；卡片墙一屏 6 张，找个文件要滚很久。
+// 库外引用（D:\xxx）也在这里显示，标成"库外"。
+let filesDir = "";        // 当前所在目录，相对 _assets，空 = 根
+let filesSel = "";        // 选中的文件/目录 rel 路径
+let filesItems = [];      // 当前层内容
+
+async function openFiles(rel = "") {
+  filesDir = rel || "";
+  filesSel = "";
+  showView("files");
+  setActive($("btn-home"), false);
+  await loadFiles();
+}
+
+async function loadFilesTo(rel) {
+  filesDir = rel || "";
+  filesSel = "";
+  await loadFiles();
+}
+
+async function loadFiles() {
+  const r = await API.get(`/assets/list?rel=${encodeURIComponent(filesDir)}`);
+  if (!r.ok) { toast(`❌ ${r.error}`); return; }
+  filesItems = r.items || [];
+  renderFiles();
+  renderFilesExt();
+}
+
+function renderFiles() {
+  // 面包屑
+  const parts = filesDir ? filesDir.split("/") : [];
+  const crumbs = [`<button data-crumb="">📁 库文件</button>`];
+  let acc = "";
+  for (const p of parts) {
+    acc = acc ? `${acc}/${p}` : p;
+    crumbs.push(`<span class="crumb-sep">/</span><button data-crumb="${escapeAttr(acc)}">${escapeHtml(p)}</button>`);
+  }
+  $("files-crumbs").innerHTML = crumbs.join("");
+  for (const b of $("files-crumbs").querySelectorAll("[data-crumb]")) {
+    b.addEventListener("click", () => loadFilesTo(b.dataset.crumb));
+  }
+
+  const totalSize = filesItems.reduce((s, x) => s + (x.size || 0), 0);
+  $("files-sub").textContent = filesItems.length ? `${filesItems.length} 项 · ${fmtSize(totalSize)}` : "空";
+
+  if (!filesItems.length) {
+    $("files-list").innerHTML =
+      `<div class="files-empty">${icon("folder", 30)}<p>这个文件夹是空的。</p>` +
+      `<p class="muted">点右上角「⬆ 上传」把文件放进库；或者去笔记里用「插入文件」。</p></div>`;
+    return;
+  }
+
+  $("files-list").innerHTML = filesItems.map((f) => {
+    const sel = f.path === filesSel ? " selected" : "";
+    const ic = f.isDir ? icon("folder", 16) : icon(TYPE_ICONS[f.type] || "file", 16);
+    const meta = f.isDir
+      ? `${f.count} 项`
+      : `${fmtSize(f.size)}${f.mtime ? ` · ${String(f.mtime).slice(0, 10)}` : ""}`;
+    return `<div class="frow${sel}" data-fp="${escapeAttr(f.path)}" data-dir="${f.isDir ? "1" : "0"}">` +
+      `<span class="frow-ic">${ic}</span>` +
+      `<span class="frow-n">${escapeHtml(f.name)}</span>` +
+      `<span class="frow-m">${escapeHtml(meta)}</span>` +
+      `<span class="frow-r" data-refs="${escapeAttr(f.path)}"></span>` +
+      `</div>`;
+  }).join("");
+
+  for (const row of $("files-list").querySelectorAll(".frow")) {
+    const fp = row.dataset.fp;
+    const isDir = row.dataset.dir === "1";
+    row.addEventListener("click", () => selectFile(fp));
+    row.addEventListener("dblclick", () => {
+      if (isDir) loadFilesTo(fp);
+      else openAssetFile(fp);
+    });
+    row.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      selectFile(fp);
+      fileRowMenu(ev, fp, isDir);
+    });
+  }
+}
+
+// 选中一行：右侧显示操作条 + 引用数
+async function selectFile(fp) {
+  filesSel = fp;
+  for (const row of $("files-list").querySelectorAll(".frow")) {
+    row.classList.toggle("selected", row.dataset.fp === fp);
+  }
+  // 异步填引用数，不阻塞选中反馈
+  for (const cell of $("files-list").querySelectorAll("[data-refs]")) {
+    const p = cell.dataset.refs;
+    API.get(`/assets/refs?rel=${encodeURIComponent(p)}`).then((r) => {
+      const n = r.ok ? (r.refs || []).length : 0;
+      cell.innerHTML = n ? `<button class="frow-ref" title="被 ${n} 篇笔记引用，点开看是哪几篇">📎 ${n}</button>` : "";
+      const b = cell.querySelector(".frow-ref");
+      if (b) b.addEventListener("click", (ev) => { ev.stopPropagation(); showRefs(p); });
+    }).catch(() => {});
+  }
+}
+
+// 右键菜单：打开 / 插入到笔记 / 重命名 / 删除 / 建子文件夹
+function fileRowMenu(ev, fp, isDir) {
+  const items = isDir
+    ? [
+        { label: "📂 打开", run: () => loadFilesTo(fp) },
+        { label: "✏ 重命名", run: () => renameAssetFlow(fp, true) },
+        { label: "🗑 删除文件夹", danger: true, run: () => deleteAssetFlow(fp, true) },
+      ]
+    : [
+        { label: "📂 用系统应用打开", run: () => openAssetFile(fp) },
+        { label: "📎 插入到笔记…", run: () => insertAssetToNote(fp) },
+        { label: "✏ 重命名", run: () => renameAssetFlow(fp, false) },
+        { label: "🗑 删除", danger: true, run: () => deleteAssetFlow(fp, false) },
+      ];
+  treeMenu(ev, items);
+}
+
+async function renameAssetFlow(fp, isDir) {
+  const cur = fp.split("/").pop();
+  const nn = await promptText(isDir ? "重命名文件夹" : "重命名文件", cur.replace(/\.[^.]+$/, ""), "新名字");
+  if (!nn) return;
+  const r = await API.post("/assets/rename", { rel: fp, name: nn });
+  if (!r.ok) return toast(`❌ ${r.error}`);
+  toast("✓ 已重命名");
+  await loadFiles();
+  // 改名会让正文里的 ![[旧名]] 断链，提醒一声
+  const refs = await API.get(`/assets/refs?rel=${encodeURIComponent(r.to)}`);
+  if (refs.ok && (refs.refs || []).length) {
+    toast(`⚠ 注意：有 ${refs.refs.length} 篇笔记里写的是旧名，需要手动改`, 6000);
+  }
+}
+
+async function deleteAssetFlow(fp, isDir) {
+  // 先查引用：有引用的要让用户确认，不闷声删
+  const chk = await API.post("/assets/delete", { rel: fp });
+  if (!chk.ok && !chk.needConfirm) return toast(`❌ ${chk.error}`);
+  if (chk.needConfirm) {
+    const names = (chk.refs || []).slice(0, 3).map((x) => `《${x.title}》`).join("、");
+    const more = (chk.refs || []).length > 3 ? ` 等 ${chk.refs.length} 篇` : "";
+    const ok = await confirmBox(`删除「${fp.split("/").pop()}」？`,
+      `它被 ${names}${more} 引用着。删掉后那些笔记里的卡片会变成「文件不存在」，但笔记本身不受影响。`);
+    if (!ok) return;
+    const r = await API.post("/assets/delete", { rel: fp, force: true });
+    if (!r.ok) return toast(`❌ ${r.error}`);
+    toast(`✓ 已删除（影响了 ${r.refs} 篇笔记的卡片）`);
+  } else {
+    toast("✓ 已删除");
+  }
+  await loadFiles();
+  await loadCategories();
+}
+
+// 打开库内文件：iframe 读不到 file://，交给宿主
+async function openAssetFile(fp) {
+  try {
+    await hana.ui.external.open({ url: `../routes/_assets/${fp.replace(/^_assets\//, "")}` });
+  } catch (err) {
+    toast(`❌ 打不开：${err?.message || err}`, 5000);
+  }
+}
+
+// 显示谁引用了这个文件
+async function showRefs(fp) {
+  const r = await API.get(`/assets/refs?rel=${encodeURIComponent(fp)}`);
+  if (!r.ok) return toast(`❌ ${r.error}`);
+  const refs = r.refs || [];
+  if (!refs.length) return toast("还没有笔记引用它");
+  const items = refs.map((x) =>
+    `<button class="ref-pick" data-id="${escapeAttr(x.id)}">` +
+    `<span class="ref-pick-t">${escapeHtml(x.title)}</span>` +
+    `<span class="ref-pick-c">${escapeHtml(x.category)}</span></button>`).join("");
+  const close = dialog({
+    title: `📎 谁引用了「${fp.split("/").pop()}」`,
+    bodyHtml: `<div class="ref-pick-list">${items}</div>`,
+    okText: "关闭",
+    onOk: () => {},
+    onMount: () => {
+      for (const b of $("m-body").querySelectorAll(".ref-pick")) {
+        b.addEventListener("click", async () => {
+          close();
+          await selectCategory("");
+          await selectEntry(b.dataset.id);
+        });
+      }
+    },
+  });
+}
+
+// 插入到笔记：选一篇，末尾追加 ![[名]]
+async function insertAssetToNote(fp) {
+  const name = fp.split("/").pop();
+  const r = await API.get("/entries?limit=300");
+  if (!r.ok) return toast(`❌ ${r.error}`);
+  const list = r.entries || [];
+  const items = list.map((e) =>
+    `<button class="ref-pick" data-id="${escapeAttr(e.id)}">` +
+    `<span class="ref-pick-t">${escapeHtml(e.title)}</span>` +
+    `<span class="ref-pick-c">${escapeHtml(e.category)}</span></button>`).join("");
+  const close = dialog({
+    title: `插入「${name}」到哪篇笔记？`,
+    bodyHtml:
+      `<div class="ref-pick-list">${items || '<p class="muted">库里还没有笔记</p>'}</div>` +
+      `<button class="small" id="ref-new-note">＋ 新建一篇笔记并插入</button>`,
+    okText: "取消",
+    onOk: () => {},
+    onMount: () => {
+      for (const b of $("m-body").querySelectorAll(".ref-pick")) {
+        b.addEventListener("click", () => doInsert(b.dataset.id, name, close));
+      }
+      $("ref-new-note").addEventListener("click", async () => {
+        const t = await promptText("新笔记标题", name.replace(/\.[^.]+$/, ""), "标题");
+        if (!t) return;
+        const c = await API.post("/entry", { title: t, content: "", category: filesCatGuess() });
+        if (!c.ok) return toast(`❌ ${c.error}`);
+        await doInsert(c.entry.id, name, close);
+      });
+    },
+  });
+}
+
+function filesCatGuess() {
+  return state.filter.category || "收件箱";
+}
+
+async function doInsert(entryId, name, closeDialog) {
+  const cur = await API.get(`/entry?id=${encodeURIComponent(entryId)}`);
+  if (!cur.ok) return toast(`❌ ${cur.error}`);
+  const body = String(cur.entry.content || "").replace(/\s*$/, "");
+  const next = body + (body ? "\n\n" : "") + `![[${name}]]`;
+  const u = await API.post("/entry", { id: entryId, content: next });
+  if (!u.ok) return toast(`❌ ${u.error}`);
+  closeDialog();
+  toast(`✓ 已插入到《${u.entry.title}》`);
+  await loadCategories();
+  await loadEntries();
+  await loadFiles();
+}
+
+// 库外引用列表
+async function renderFilesExt() {
+  const r = await API.get("/assets/external");
+  const items = r.ok ? r.items || [] : [];
+  const box = $("files-ext-list");
+  const det = $("files-ext");
+  det.hidden = !items.length;
+  if (!items.length) { box.innerHTML = ""; return; }
+  box.innerHTML = items.map((x) =>
+    `<li data-ext="${escapeAttr(x.id)}">` +
+    `<span class="frow-ic">${icon(TYPE_ICONS[x.type] || "file", 14)}</span>` +
+    `<span class="frow-n">${escapeHtml(x.title)}${x.missing ? ' <b class="ref-lost">已失效</b>' : ""}</span>` +
+    `<span class="frow-m" title="${escapeAttr(x.target)}">${escapeHtml(String(x.target).slice(0, 50))}</span>` +
+    `</li>`).join("");
+  for (const li of box.querySelectorAll("[data-ext]")) {
+    li.addEventListener("click", async () => {
+      await selectCategory("");
+      await selectEntry(li.dataset.ext);
+    });
+  }
+}
+
+// 上传：弹一个子目录选择，然后走隐藏的 file input
+async function uploadAssetFlow() {
+  const inp = document.createElement("input");
+  inp.type = "file";
+  inp.multiple = true;
+  inp.style.display = "none";
+  document.body.appendChild(inp);
+  inp.addEventListener("change", async () => {
+    const files = Array.from(inp.files || []);
+    inp.remove();
+    if (!files.length) return;
+    // 问传到哪：当前目录 or 根
+    const sub = filesDir ? filesDir.replace(/^_assets\/?/, "") : "";
+    let okCount = 0;
+    for (const f of files) {
+      const fd = new FormData();
+      fd.append("file", f, f.name);
+      fd.append("subdir", sub);
+      try {
+        const r = await hana.api.fetch("/asset/upload", { method: "POST", body: fd });
+        const j = await r.json();
+        if (j.ok) okCount++;
+        else toast(`❌ ${f.name}：${j.error}`);
+      } catch (err) {
+        toast(`❌ ${f.name}：${err?.message || err}`);
+      }
+    }
+    if (okCount) toast(`✓ 已上传 ${okCount} 个文件${sub ? `到 ${sub}` : ""}`);
+    await loadFiles();
+  });
+  inp.click();
+}
+
+async function mkAssetDirFlow() {
+  const nn = await promptText("新建文件夹", "", "文件夹名");
+  if (!nn) return;
+  const sub = filesDir ? filesDir.replace(/^_assets\/?/, "") : "";
+  const r = await API.post("/assets/mkdir", { rel: sub, name: nn });
+  if (!r.ok) return toast(`❌ ${r.error}`);
+  toast("✓ 已建文件夹");
+  await loadFiles();
+}
+
+$("btn-files").addEventListener("click", () => openFiles(""));
+$("btn-files-back").addEventListener("click", () => { showWall(false); showHome(); });
+$("btn-files-up").addEventListener("click", uploadAssetFlow);
+$("btn-files-mkdir").addEventListener("click", mkAssetDirFlow);
+
+// ---- ![[资源名]] 卡片渲染钩子（markdown.js 会调它）------------------
+// 查前端缓存的 _assets 清单，按类型产出卡片。查不到返回 null，
+// markdown.js 会显示"文件不存在"的占位——不假装有。
+window.__refCard = (name, alias) => {
+  const key = String(name || "").replace(/^\.\//, "");
+  const f = (window.__assets || {})[key] || (window.__assets || {})[key.split("/").pop()];
+  const label = alias || key;
+  if (!f) return null;
+  const url = `../routes/_assets/${f.path.replace(/^_assets\//, "")}`;
+  if (f.isDir) {
+    return `<span class="ref-card ref-card-dir" data-ref-card="${escapeAttr(f.path)}">` +
+      `<span class="rc-ic">${icon("folder", 18)}</span>` +
+      `<span class="rc-b"><span class="rc-t">${escapeHtml(label)}</span>` +
+      `<span class="rc-m">文件夹 · ${f.count} 项</span></span>` +
+      `<span class="rc-x">打开 ›</span></span>`;
+  }
+  if (f.type === "image") {
+    return `<span class="ref-card ref-card-img" data-ref-card="${escapeAttr(f.path)}">` +
+      `<img class="rc-img" src="${escapeAttr(url)}" alt="${escapeAttr(label)}" loading="lazy">` +
+      `<span class="rc-cap">${escapeHtml(label)}</span></span>`;
+  }
+  return `<span class="ref-card" data-ref-card="${escapeAttr(f.path)}">` +
+    `<span class="rc-ic">${icon(TYPE_ICONS[f.type] || "file", 18)}</span>` +
+    `<span class="rc-b"><span class="rc-t">${escapeHtml(label)}</span>` +
+    `<span class="rc-m">${escapeHtml(TYPE_LABEL[f.type] || "文件")} · ${fmtSize(f.size)}</span></span>` +
+    `<span class="rc-x">打开 ›</span></span>`;
+};
+
+// 拉一份 _assets 全量清单（扁平化，含子目录），供 refCard 查。
+// 深度限 3 层，防用户建深层目录把树拉爆。
+async function refreshAssetIndex() {
+  const idx = {};
+  const walk = async (rel, depth) => {
+    if (depth > 3) return;
+    const r = await API.get(`/assets/list?rel=${encodeURIComponent(rel)}`);
+    if (!r.ok) return;
+    for (const f of r.items || []) {
+      idx[f.name] = f;
+      idx[f.path] = f;
+      if (f.isDir) await walk(f.path, depth + 1);
+    }
+  };
+  await walk("", 0);
+  window.__assets = idx;
+  return idx;
+}
+
+// 卡片点击：跳到文件管理器并选中
+function bindRefCards(root) {
+  for (const c of (root || document).querySelectorAll("[data-ref-card]")) {
+    if (c.__bound) continue;
+    c.__bound = true;
+    c.addEventListener("click", () => {
+      const fp = c.dataset.refCard;
+      const dir = fp.split("/").slice(0, -1).join("/");
+      openFiles(dir).then(() => selectFile(fp));
+    });
+  }
+}
+
+// ============ 文件管理器 END ============
 
 // 4. 快速切换器与 AI 知识库问答（Ctrl+K / Ctrl+O）
 async function openQuickSwitcher(initialAskMode = false) {
@@ -1706,7 +2157,7 @@ window.addEventListener("keydown", (e) => {
 // 两个 section 同时显示，布局塌到左下。现在一律走 showView(name)：
 // 它先把三个全关掉，再只开点名的那一个。
 // 注意：edit（编辑器）不是这一层的，它在 detail 内部，由 setEditMode 管。
-const VIEWS = ["home", "wall", "detail"];
+const VIEWS = ["home", "wall", "detail", "files"];
 function showView(name) {
   for (const v of VIEWS) show($(v), v === name);
 }
@@ -1865,9 +2316,13 @@ function renderWall() {
   const multi = wallSelectMode || wallPicked.size > 0;
   $("wall-cards").innerHTML = wallList.map((e, i) => {
     const picked = wallPicked.has(e.id);
-    return `<button class="wcard${i === wallIndex ? " active" : ""}${picked ? " picked" : ""}" data-i="${i}" data-id="${e.id}">
+    // 库内上传的图片直接露封面；本地引用的图 iframe 读不到，只给角标
+    const cover = (e.type === "image" && e.ref?.target?.startsWith("_assets/"))
+      ? `<img class="wcard-cover" src="../routes/${escapeAttr(e.ref.target)}" alt="" loading="lazy">`
+      : "";
+    return `<button class="wcard${i === wallIndex ? " active" : ""}${picked ? " picked" : ""}${cover ? " has-cover" : ""}" data-i="${i}" data-id="${e.id}">
       <span class="wcard-check" data-check="1">${picked ? "✓" : ""}</span>
-      <span class="wcard-type">${icon(TYPE_ICONS[e.type] || "note", 13)}</span>
+      ${cover || `<span class="wcard-type">${icon(TYPE_ICONS[e.type] || "note", 13)}</span>`}
       <span class="wcard-body">
         <span class="wcard-title">${escapeHtml(e.title)}</span>
         <span class="wcard-snippet">${escapeHtml(e.snippet || e.content || "").slice(0, 90)}</span>

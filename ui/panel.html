@@ -18,6 +18,8 @@
           <div class="more-menu side-menu" id="side-menu" hidden>
             <div class="menu-sec">新建</div>
             <button id="mi-new">＋ 新建收藏</button>
+            <button id="mi-pick-file">📎 收藏文件/文件夹</button>
+            <button id="mi-pick-url">🔗 收藏网页</button>
             <div class="menu-sec">库</div>
             <button id="mi-storage">📂 存储位置</button>
             <button id="mi-backup">💾 备份与恢复</button>
@@ -30,6 +32,7 @@
       </div>
       <button class="cat cat-home" id="btn-home" title="总览首页"><span>◈ 首页</span></button>
       <button class="cat cat-ai" id="btn-quick-ai" title="快速跳转笔记或向 AI 提问 (Ctrl+K)"><span>✨ 搜索与 AI 问答</span><span class="count">Ctrl+K</span></button>
+      <button class="cat cat-files" id="btn-files" title="库内文件管理器：上传、重命名、看谁引用了、插入到笔记"><span>📁 文件管理器</span></button>
       <button class="cat cat-stage" id="btn-clip-stage" title="跳到首页「待处理」区（收件箱 + 待确认收藏）"><span>📥 待处理</span><span class="badge" id="clip-stage-count" hidden>0</span></button>
       <div class="side-cats-head">
         <span class="label">分类</span>
@@ -112,6 +115,28 @@
       <div class="wall-cards" id="wall-cards"></div>
     </section>
 
+    <!-- 文件管理器：右栏主区，列表形态（不是卡片墙） -->
+    <section class="files" id="files" hidden>
+      <div class="files-head">
+        <button class="icon-btn" id="btn-files-back" title="返回总览">←</button>
+        <div class="files-title">
+          <h2>📁 文件管理器</h2>
+          <span class="muted" id="files-sub"></span>
+        </div>
+        <span class="grow"></span>
+        <button class="small" id="btn-files-up" title="上传文件到当前文件夹">⬆ 上传</button>
+        <button class="small" id="btn-files-mkdir" title="新建子文件夹">＋ 文件夹</button>
+      </div>
+      <!-- 面包屑：_assets / 图片 / 2026 -->
+      <nav class="files-crumbs" id="files-crumbs"></nav>
+      <div class="files-list" id="files-list"></div>
+      <!-- 库外引用：D:\xxx 那种，文件管理器也要能看见 -->
+      <details class="files-ext" id="files-ext">
+        <summary>库外引用（文件不在库里，只是记了位置）</summary>
+        <ul class="files-ext-list" id="files-ext-list"></ul>
+      </details>
+    </section>
+
     <section class="detail" id="detail" hidden>
       <div class="detail-head">
         <button class="icon-btn only-narrow" id="btn-back-side" title="分类">☰</button>
@@ -142,6 +167,8 @@
             <p class="muted">或直接说「帮我把这段整理进收藏夹」，对话里的「📥 收入念念收藏夹」会先让你勾选再入库。</p>
           </div>
           <article class="md" id="v-body"></article>
+          <!-- 资源查看器：按类型显示，图片/影音/文件夹/网页各一套 -->
+          <section class="ref-view" id="ref-view" hidden></section>
           <div id="backlinks" class="backlinks" hidden>
             <h3 class="bl-title">反向链接与提及 <span id="bl-count"></span></h3>
             <ul id="bl-list"></ul>

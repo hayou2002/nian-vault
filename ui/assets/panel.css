@@ -158,6 +158,41 @@ body.resizing { cursor: col-resize; user-select: none; }
 .wall-inbox-acts { display: inline-flex; gap: 6px; }
 .wall-inbox-acts .small { font-size: 11.5px; padding: 3px 8px; }
 
+/* 资源查看器：按类型显示 */
+.ref-view { margin: 0 0 18px; border: 1px solid var(--c-border); border-radius: var(--r-lg); background: var(--c-card); overflow: hidden; }
+.ref-head { display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-bottom: 1px solid var(--c-border); background: color-mix(in srgb, var(--c-accent) 5%, transparent); }
+.ref-type { color: var(--c-accent); display: inline-flex; }
+.ref-title { font-weight: 650; font-size: 14px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ref-loc { padding: 7px 12px; font-size: 11.5px; color: var(--c-muted); word-break: break-all; border-bottom: 1px solid var(--c-border); }
+.ref-loc a { color: var(--c-accent); }
+.ref-lost { color: #c0504d; }
+
+.ref-img { display: block; max-width: 100%; max-height: 60vh; margin: 0 auto; background: var(--c-bg); }
+
+.ref-empty { padding: 26px 18px; text-align: center; color: var(--c-muted); }
+.ref-empty svg { opacity: .5; }
+.ref-empty p { margin: 8px 0 0; font-size: 13px; }
+.ref-empty .muted { font-size: 12px; opacity: .85; }
+
+.ref-folder { padding: 10px 12px; }
+.ref-folder-stat { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--c-muted); }
+.ref-folder-stat b { color: var(--c-accent); font-size: 15px; }
+.ref-dist { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 10px; }
+.ref-dist-item { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; padding: 2px 8px;
+  border: 1px solid var(--c-border); border-radius: 99px; background: var(--c-bg); }
+.ref-dist-item b { color: var(--c-accent); }
+.ref-kids { list-style: none; margin: 0; padding: 0; max-height: 300px; overflow-y: auto; }
+.ref-kids li { display: flex; align-items: center; gap: 7px; padding: 5px 6px; border-radius: var(--r); font-size: 12.5px; }
+.ref-kids li:nth-child(odd) { background: color-mix(in srgb, var(--c-accent) 4%, transparent); }
+.ref-k-ic { flex: none; color: var(--c-muted); display: inline-flex; }
+.ref-k-n { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ref-k-s { flex: none; font-size: 11px; color: var(--c-muted); }
+
+/* 卡片墙里的图片封面 */
+.wcard-cover { width: 44px; height: 44px; flex: none; border-radius: var(--r); object-fit: cover;
+  background: var(--c-bg); border: 1px solid var(--c-border); }
+.wcard.has-cover { min-height: 76px; }
+
 /* 多选：卡片勾选框 + 批量操作栏 */
 .wcard-check { flex: none; width: 16px; height: 16px; margin-top: 1px; border: 1.5px solid var(--c-border);
   border-radius: 4px; background: var(--c-card); font-size: 11px; line-height: 14px; text-align: center;
@@ -216,6 +251,77 @@ body.resizing { cursor: col-resize; user-select: none; }
 /* 首页待处理区的三个收件箱动作 */
 .inbox-acts { display: flex; gap: 6px; flex-wrap: wrap; margin: 2px 0 8px; }
 .inbox-acts .small { font-size: 11.5px; padding: 3px 8px; }
+
+/* 文件管理器：列表形态 */
+.files { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; padding: 14px 18px; gap: 8px; overflow: hidden; }
+.files-head { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; flex-wrap: wrap; }
+.files-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.files-title h2 { margin: 0; font-size: 17px; }
+.files-title .muted { font-size: 12px; }
+.files-head .small[disabled] { opacity: .4; cursor: default; }
+
+.files-crumbs { display: flex; align-items: center; gap: 3px; flex-wrap: wrap; flex: 0 0 auto;
+  font-size: 12px; padding: 5px 8px; background: var(--c-card); border: 1px solid var(--c-border); border-radius: var(--r); }
+.files-crumbs button { border: none; background: none; font: inherit; color: var(--c-accent); cursor: pointer; padding: 1px 4px; border-radius: 4px; }
+.files-crumbs button:hover { background: var(--c-accent-light); }
+.files-crumbs .crumb-sep { color: var(--c-muted); }
+
+/* 列表：一行 32px，一屏 20+ 行 */
+.files-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; border: 1px solid var(--c-border);
+  border-radius: var(--r-lg); background: var(--c-card); }
+.files-list::-webkit-scrollbar { width: 8px; }
+.files-list::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--c-muted) 26%, transparent); border-radius: 99px; }
+
+.frow { display: flex; align-items: center; gap: 9px; padding: 6px 11px; cursor: pointer; font-size: 13px;
+  border-bottom: 1px solid color-mix(in srgb, var(--c-border) 45%, transparent); }
+.frow:last-child { border-bottom: none; }
+.frow:hover { background: var(--c-accent-light); }
+.frow.selected { background: color-mix(in srgb, var(--c-accent) 14%, transparent); box-shadow: inset 3px 0 var(--c-accent); }
+.frow-ic { flex: none; color: var(--c-muted); display: inline-flex; }
+.frow.selected .frow-ic { color: var(--c-accent); }
+.frow-n { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.frow-m { flex: 0 0 auto; font-size: 11.5px; color: var(--c-muted); white-space: nowrap; }
+.frow-r { flex: 0 0 44px; text-align: right; }
+.frow-ref { border: none; background: none; font: inherit; font-size: 11.5px; color: var(--c-accent); cursor: pointer; padding: 1px 4px; border-radius: 4px; }
+.frow-ref:hover { background: var(--c-accent-light); }
+
+.files-empty { padding: 40px 20px; text-align: center; color: var(--c-muted); }
+.files-empty svg { opacity: .4; }
+.files-empty p { margin: 8px 0 0; font-size: 13px; }
+.files-empty .muted { font-size: 12px; }
+
+/* 库外引用 */
+.files-ext { flex: 0 0 auto; border: 1px dashed var(--c-border); border-radius: var(--r-lg); padding: 7px 11px; background: var(--c-card); }
+.files-ext summary { font-size: 12px; color: var(--c-muted); cursor: pointer; }
+.files-ext-list { list-style: none; margin: 7px 0 0; padding: 0; max-height: 180px; overflow-y: auto; }
+.files-ext-list li { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: var(--r); font-size: 12.5px; cursor: pointer; }
+.files-ext-list li:hover { background: var(--c-accent-light); }
+.files-ext-list .frow-m { font-size: 11px; }
+
+/* 选文件/选笔记的列表 */
+.ref-pick-list { max-height: 320px; overflow-y: auto; display: grid; gap: 3px; }
+.ref-pick { display: flex; align-items: baseline; gap: 9px; width: 100%; text-align: left; border: none;
+  background: none; font: inherit; font-size: 13px; color: var(--c-text); padding: 7px 9px; border-radius: var(--r); cursor: pointer; }
+.ref-pick:hover { background: var(--c-accent-light); }
+.ref-pick-t { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ref-pick-c { flex: none; font-size: 11px; color: var(--c-muted); }
+#ref-new-note { margin-top: 8px; }
+
+/* 正文里的资源卡片 */
+.ref-card { display: inline-flex; align-items: center; gap: 9px; margin: 4px 0; padding: 7px 11px;
+  border: 1px solid var(--c-border); border-radius: var(--r-lg); background: var(--c-card);
+  cursor: pointer; max-width: 100%; vertical-align: middle; transition: border-color .15s ease, box-shadow .15s ease; }
+.ref-card:hover { border-color: var(--c-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--c-accent) 14%, transparent); }
+.rc-ic { flex: none; color: var(--c-accent); display: inline-flex; }
+.rc-b { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.rc-t { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+.rc-m { font-size: 11px; color: var(--c-muted); }
+.rc-x { flex: none; font-size: 11.5px; color: var(--c-accent); }
+.ref-card-img { padding: 5px; gap: 7px; }
+.rc-img { display: block; max-width: 200px; max-height: 130px; border-radius: var(--r); object-fit: cover; }
+.rc-cap { font-size: 11.5px; color: var(--c-muted); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ref-missing { display: inline-block; margin: 2px 0; padding: 2px 8px; font-size: 12px; color: #c0504d;
+  background: color-mix(in srgb, #c0504d 9%, transparent); border-radius: var(--r); }
 
 /* 侧栏右键菜单：分类行 / 树条目通用 */
 .tree-menu { position: fixed; z-index: 60; min-width: 168px; padding: 4px;
