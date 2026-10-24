@@ -2591,11 +2591,13 @@ function fileRowMenu(ev, fp, isDir) {
   const items = isDir
     ? [
         { label: "📂 打开", run: () => loadFilesTo(fp) },
+        { label: "📁 打开文件位置", run: () => revealAsset(fp) },
         { label: "✏ 重命名", run: () => renameAssetFlow(fp, true) },
         { label: "🗑 删除文件夹", danger: true, run: () => deleteAssetFlow(fp, true) },
       ]
     : [
-        { label: "📂 用系统应用打开", run: () => openAssetFile(fp) },
+        { label: "👁 预览", run: () => previewAsset(fp) },
+        { label: "📁 打开文件位置", run: () => revealAsset(fp) },
         { label: "📎 插入到笔记…", run: () => insertAssetToNote(fp) },
         { label: "✏ 重命名", run: () => renameAssetFlow(fp, false) },
         { label: "🗑 删除", danger: true, run: () => deleteAssetFlow(fp, false) },
@@ -2669,12 +2671,28 @@ async function previewAsset(fp, meta) {
       `<p class="muted">这种文件没法在面板里直接看。</p></div>`;
   }
 
-  const dlg = dialog({
-    title: `👁 预览`,
-    bodyHtml: `<div class="fprev">${head}<div class="fp-body">${body}</div></div>`,
-    okText: "关闭",
-    onOk: () => {},
-    onMount: () => {
+  // 独立遮罩，不用通用 dialog()：那个是单例，预览开着时弹别的窗会把预览冲掉。
+  const oldOv = document.getElementById('preview-overlay');
+  if (oldOv) oldOv.remove();
+  const ov = document.createElement('div');
+  ov.id = 'preview-overlay';
+  ov.className = 'preview-overlay';
+  ov.innerHTML =
+    '<div class="preview-modal" role="dialog" aria-label="预览">' +
+      '<div class="preview-head"><span class="preview-title">👁 预览</span>' +
+      '<button type="button" class="preview-close" id="preview-close" aria-label="关闭">✕</button></div>' +
+      '<div class="preview-body"><div class="fprev">' + head + '<div class="fp-body">' + body + '</div></div></div>' +
+    '</div>';
+  document.body.appendChild(ov);
+  const closePreview = () => {
+    ov.remove();
+    document.removeEventListener('keydown', onEsc);
+  };
+  const onEsc = (ev) => { if (ev.key === 'Escape') closePreview(); };
+  document.getElementById('preview-close').addEventListener('click', closePreview);
+  ov.addEventListener('click', (ev) => { if (ev.target === ov) closePreview(); });
+  document.addEventListener('keydown', onEsc);
+  {
       const box = $("pv-text");
       if (box) {
         // 拉文本：失败就显示错误，不假装空文件
@@ -2693,17 +2711,56 @@ async function previewAsset(fp, meta) {
           box.innerHTML = `<div class="fp-err">❌ 读取失败：${escapeHtml(err?.message || String(err))}</div>`;
         });
       }
-    },
-  });
-  return dlg;
+  }
+  return closePreview;
 }
 
-async function openAssetFile(fp) {
+// 库内文件 → 交给宿主 SDK 的资源引用。
+// 关键：不是 http 网址。sdk/_ui-protocol.d.ts 的 PluginResourceRef 支持
+// {kind:'local-file', path} / {kind:'mount', mountId, path} / {kind:'url', url}。
+// 之前传的是 assetUrl(fp)（一个 http 地址），宿主认不出那是本地文件，所以永远打不开。
+function assetRef(fp) {
+  const root = String(state.root || '').replace(/[\\/]+$/, '');
+  if (!root) return null;
+  const sep = root.includes('\\') ? '\\' : '/';
+  const rel = String(fp).replace(/^_assets\//, '');
+  return { kind: 'local-file', path: root + sep + '_assets' + sep + rel };
+}
+
+// 在资源管理器中定位这个文件（用户自己去双击打开）
+async function revealAsset(fp) {
+  const ref = assetRef(fp);
+  if (!ref) return toast('还不知道库在磁盘上的位置，先打开一次设置让它记住', 5000);
   try {
-    await hana.ui.external.open({ url: assetUrl(fp) });
+    const r = await hana.resources.open({ resource: ref, mode: 'reveal' });
+    if (r && r.opened === false) toast('系统没打开资源管理器，请确认文件是否还在', 5000);
   } catch (err) {
-    toast(`❌ 打不开：${err?.message || err}`, 5000);
+    // 退化：把路径复制到剪贴板，用户自己粘到地址栏
+    try {
+      await hana.ui.clipboard.writeText({ text: ref.path });
+      toast('❌ 定位失败，已把文件完整路径复制到剪贴板', 6000);
+    } catch {
+      toast('❌ 定位失败：' + (err?.message || err), 6000);
+    }
   }
+}
+
+// 交给宿主预览（宿主那套渲染比我们自绘的更完整）
+async function hostPreviewAsset(fp) {
+  const ref = assetRef(fp);
+  if (!ref) return false;
+  try {
+    const r = await hana.resources.open({ resource: ref, mode: 'preview' });
+    return !!(r && r.opened !== false);
+  } catch {
+    return false;
+  }
+}
+
+// 兼容老调用：宿主预览不行再退回自绘
+async function openAssetFile(fp) {
+  if (await hostPreviewAsset(fp)) return;
+  await previewAsset(fp);
 }
 
 // 显示谁引用了这个文件

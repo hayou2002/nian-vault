@@ -1,5 +1,51 @@
 # 念念收藏夹 - 更新日志
 
+## [0.12.2] - 2026-10-24
+
+### 一、预览和「打开文件位置」——SDK 里本来就有，我一直没用
+
+你说「不行就别做了」，但我翻 SDK 找到了答案，不用放弃：
+
+`sdk/_ui-protocol.d.ts:825` 写得很清楚：
+
+    export interface PluginResourceOpenInput {
+        resource: PluginResourceRef | Record<string, unknown>;
+        mode?: 'preview' | 'reveal' | 'download' | string;
+    }
+
+- **`mode: 'reveal'`** → 在资源管理器里定位这个文件（你要的「打开文件位置」）
+- **`mode: 'preview'`** → 宿主自己预览（比我在 iframe 里自绘更可靠）
+
+而 `PluginResourceRef` 支持 `{ kind: 'local-file', path }`，可以直接给本地绝对路径。
+
+**之前一直打不开的根因**：我用的是 `hana.ui.external.open({ url: assetUrl(fp) })`——
+传进去的是一个 **http 网址**（`https://…/_assets/xxx`），宿主认不出那是一个本地文件，
+所以「用系统应用打开」从来没成功过。
+
+现在改成：
+- 右键 **📁 打开文件位置** → `resources.open({ resource:{kind:'local-file',path}, mode:'reveal' })`
+  定位失败会把完整路径复制到剪贴板，用户自己能粘到地址栏
+- 右键 **👁 预览** → 先试宿主 `mode:'preview'`，不行才退回自绘预览
+- 应用内点文件块 → 只预览，不折腾系统工具（按你的要求）
+
+### 二、预览改独立遮罩
+
+预览原来跟附件弹窗一个毛病：挂在单例 `dialog()` 的 `m-body` 里，
+预览开着时只要弹了任何别的窗，预览就被冲掉。现在用它自己的遮罩层，
+点空白关、Esc 关、右上角 ✕ 关，互不干扰。
+
+### 三、测试
+
+新增 `preview-check.mjs`（18 项）：确认 SDK 真支持 preview/reveal、
+代码用对了 mode、右键菜单有这两项、五种类型预览都能渲染。
+视觉体检从 24 项加到 28 项（多验预览遮罩的 fixed/z-index）。
+
+16 个测试文件 **872 项** + 28 项视觉体检，全绿。
+
+### 还没做的
+
+你说的 ②「引用条目没在文件管理中心出现」还没做；
+③ 网页抓取换 GitHub 的库也没做。下一轮，一次一件。
 ## [0.12.1] - 2026-10-24
 
 这一版先认个错：**复选框被反馈了四次，我四次都说修好了，但每次都改错了地方。**
