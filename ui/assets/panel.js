@@ -1,6 +1,6 @@
 import { hana } from "./sdk.js";
 import { icon } from "./icons.js";
-import { renderMarkdown } from "./markdown.js";
+import { renderMarkdown, setResolveAsset } from "./markdown.js";
 
 const API = {
   get: (path) => hana.api.fetch(path).then((r) => r.json()),
@@ -16,6 +16,10 @@ function assetUrl(rel) {
   try { return hana.api.url(`/_assets/${clean}`); }
   catch { return `/_assets/${clean}`; }
 }
+
+// 把 assetUrl 交给 markdown.js：这样笔记正文里的 ![](路径) 也能拿到绝对 URL。
+// 不注册的话 markdown.js 只能退化用原路径，图片还是裂的。
+setResolveAsset(assetUrl);
 
 const $ = (id) => document.getElementById(id);
 const appRoot = $("app");
@@ -695,12 +699,23 @@ const Attach = {
   // （原来是内联展开面板，内容一多就把编辑器顶下去了——用户反馈的问题。）
   toggle() { this.openDialog(); },
   async openDialog() {
-    dialog({
-      title: "📎 附件",
-      bodyHtml: `<div class="attach-dialog-host"></div>`,
-      okText: "关闭",
-      onOk: () => {},
-    });
+    // 自己建独立遮罩，不用通用 dialog()。
+    // 原因：dialog() 是单例，每次打开都 m-body.innerHTML = ...，
+    // 附件容器挂在里面会被别的弹窗直接冲掉。独立遮罩互不干扰。
+    const old = document.getElementById("attach-overlay");
+    if (old) old.remove();
+    const ov = document.createElement("div");
+    ov.id = "attach-overlay";
+    ov.className = "attach-overlay";
+    ov.innerHTML =
+      `<div class="attach-modal" role="dialog" aria-label="附件">
+         <div class="attach-head">
+           <span class="attach-title">📎 附件</span>
+           <button type="button" class="attach-close" id="attach-close" aria-label="关闭">✕</button>
+         </div>
+         <div class="attach-dialog-host"></div>
+       </div>`;
+    document.body.appendChild(ov);
     this.open = true;
     const b = $("btn-attach");
     if (b) b.setAttribute("aria-expanded", "true");
@@ -718,13 +733,20 @@ const Attach = {
          <span class="muted" id="attach-stat"></span>
          <button type="button" class="link-btn" id="btn-attach-refresh">↻ 刷新</button>
        </div>`;
-    $("m-body").appendChild(box);
+    ov.querySelector(".attach-dialog-host").appendChild(box);
     this.wire();
     await this.refresh();
-    // 等用户关掉再收干净：不然下次打开会叠一个旧容器
-    const cleanup = () => { box.remove(); this.open = false; $("btn-attach")?.setAttribute("aria-expanded", "false"); };
-    $("m-cancel").addEventListener("click", cleanup, { once: true });
-    $("m-ok").addEventListener("click", cleanup, { once: true });
+    const cleanup = () => {
+      ov.remove();
+      this.open = false;
+      $("btn-attach")?.setAttribute("aria-expanded", "false");
+      document.removeEventListener("keydown", onEsc);
+    };
+    const onEsc = (ev) => { if (ev.key === "Escape") cleanup(); };
+    $("attach-close").addEventListener("click", cleanup);
+    // 点遮罩空白处也关
+    ov.addEventListener("click", (ev) => { if (ev.target === ov) cleanup(); });
+    document.addEventListener("keydown", onEsc);
   },
   // 弹窗里的按钮/输入框接线（每次打开都要重接，因为容器是新的）
   wire() {
@@ -1901,16 +1923,21 @@ async function openRef(id) {
 function refBadge(e) {
   const ref = e.ref;
   if (!ref) return "";
-  if (ref.kind === "url") return ref.host || "";
-  if (ref.missing) return "原件已失效";
-  const bits = [];
-  if (e.type === "folder" && ref.children) {
-    bits.push(`${ref.children.count} 项`);
-    if (ref.children.size) bits.push(fmtSize(ref.children.size));
-  } else if (ref.size != null) {
-    bits.push(fmtSize(ref.size));
+  // 引用网页：显示域名，前面标「网页」
+  if (ref.kind === "url") return `🔗 网页 · ${ref.host || ""}`;
+  // 本机引用：重点标出来"只是记着位置，没搬进库"
+  if (ref.kind === "path") {
+    if (ref.missing) return "⚠ 原件已失效（可能被移动或删除）";
+    const bits = [];
+    bits.push("🔗 本机引用");
+    if (e.type === "folder" && ref.children) {
+      bits.push(`${ref.children.count} 项`);
+      if (ref.children.size) bits.push(fmtSize(ref.children.size));
+    } else if (ref.size != null) bits.push(fmtSize(ref.size));
+    return bits.join(" · ");
   }
-  return bits.join(" · ");
+  // kind 只可能是 path 或 url，走到这里说明数据形状意外，不硬编
+  return "";
 }
 
 function fmtSize(n) {
@@ -2285,7 +2312,12 @@ function askRefKind() {
            <button type="button" class="refkind-btn" data-k="dir">
              <span class="rk-ic">${icon("folder", 22)}</span>
              <span class="rk-t">引用文件夹</span>
-             <span class="rk-d">粘贴目录路径（从资源管理器地址栏复制）</span>
+             <span class="rk-d">用系统选择器挑一个目录，只记位置不复制</span>
+           </button>
+           <button type="button" class="refkind-btn" data-k="dirpath">
+             <span class="rk-ic">${icon("folder", 22)}</span>
+             <span class="rk-t">粘贴路径引用</span>
+             <span class="rk-d">选择器用不了时，手动粘目录路径</span>
            </button>
            <button type="button" class="refkind-btn" data-k="vault">
              <span class="rk-ic">${icon("folder", 22)}</span>
@@ -2343,17 +2375,40 @@ async function pickVaultDir() {
   });
 }
 
+// 用宿主选择器挑目录。mode 的合法值见 SDK：
+//   _ui-protocol.d.ts → PluginResourcePickInput.mode?: 'file' | 'directory' | string
+// 只有 'directory' 会让选择器停在"选文件夹"而不是"进入文件夹"。
+async function pickDirViaHost() {
+  let lastErr = null;
+  for (const arg of [{ mode: "directory" }, { mode: "directory", multiple: false }]) {
+    try {
+      const r = await hana.resources.pick(arg);
+      const first = r?.resources?.[0] || r?.[0] || null;
+      const t = first?.path || first?.uri;
+      if (t) {
+        let out = String(t).replace(/^file:\/\//, "");
+        try { out = decodeURIComponent(out); } catch {}
+        return out;
+      }
+      if (r) break;   // 没抛错也没选到 = 用户取消
+    } catch (err) { lastErr = err; }
+  }
+  if (lastErr) toast(`打开选择器失败：${lastErr?.message || lastErr}，可改用「粘贴路径引用」`, 6000);
+  return null;
+}
+
 async function collectExistingFlow() {
   const kind = await askRefKind();
   if (!kind) return;
 
   let target = "";
   if (kind === "file") {
-    // 文件：走宿主选择器。mode 合法值无文档，只试两种最可能的，
-    // 且都不带 "file" 这类值——带上会让宿主进入纯文件模式，反而选不了目录。
+    // 文件：走宿主选择器。mode 用 SDK 明确支持的 'file'
+    // （_ui-protocol.d.ts → PluginResourcePickInput.mode?: 'file' | 'directory' | string）。
+    // 不再传 {} 靠宿主默认——默认行为不确定，明确要 file 更可靠。
     let picked = null;
     let lastErr = null;
-    for (const arg of [{}, { mode: "any" }]) {
+    for (const arg of [{ mode: "file" }, { mode: "file", multiple: true }]) {
       try {
         const r = await hana.resources.pick(arg);
         const first = r?.resources?.[0] || r?.[0] || null;
@@ -2373,8 +2428,13 @@ async function collectExistingFlow() {
     target = String(raw).replace(/^file:\/\//, "");
     try { target = decodeURIComponent(target); } catch {}
   } else if (kind === "dir") {
-    // 文件夹：宿主选择器选不了（会进入下一级），改成粘贴路径。
-    const v = await promptText("引用文件夹", "", "粘贴目录路径，如 D:\\资料\\教资真题");
+    // 文件夹：SDK 的 PluginResourcePickInput 明确支持 mode:"directory"。
+    // 之前一直选不了目录，是因为我在猜 mode 的值（any/file/files），全错。
+    target = (await pickDirViaHost()) || "";
+    if (!target) return;
+  } else if (kind === "dirpath") {
+    // 兜底：宿主选择器在某些环境不可用时，手动粘路径
+    const v = await promptText("粘贴目录路径", "", "如 D:\\资料\\教资真题");
     if (!v) return;
     target = String(v).trim().replace(/^file:\/\//, "").replace(/^["']|["']$/g, "");
   } else {
@@ -2570,8 +2630,11 @@ async function insertAssetsToNote(paths) {
 }
 
 async function insertAssetToNote(fp, allPaths = null) {
-  const names = (allPaths || [fp]).map((x) => x.split("/").pop());
-  const name = fp.split("/").pop();
+  // 用带路径的完整引用，不要只留文件名。
+  // 只写文件名的话，文件一旦在子目录里就查不到，正文显示「文件不存在」——
+  // 这是「MD 里加文件不可用」的直接原因之一。
+  const names = (allPaths || [fp]).map((x) => String(x).replace(/^_assets\//, ""));
+  const name = String(fp).split("/").pop();
   const r = await API.get("/entries?limit=300");
   if (!r.ok) return toast(`❌ ${r.error}`);
   const list = r.entries || [];
@@ -2813,6 +2876,53 @@ document.addEventListener("keydown", (ev) => {
 // markdown.js 会显示"文件不存在"的占位——不假装有。
 // MD 里 ![[名]] 的卡片。类型标注要一眼看得出：色带 + 类型徽章 + 大小。
 // 图片直接内嵌；视频/音频给播放条；其他给"打开"入口。
+// ---- ![alt](路径) 块渲染钩子（markdown.js 会调它）----
+// 正文里插入的文件可能写成四种样子：
+//   _assets/图.png        （库内相对）
+//   ../_assets/图.png     （老写法，要兼容）
+//   子目录/视频.mp4       （带子目录）
+//   图.png                （只有名字）
+// 全部归一化后去索引里查；查到了按真实类型渲染，查不到返回 null 让上层退回 <img>。
+window.__refBlock = (path, alt) => {
+  const pool = window.__assets || {};
+  // 归一化：去掉 ./ ../ ../routes/ _assets/ 这些前缀
+  let key = String(path || "").trim();
+  key = key.replace(/^\.\//, "").replace(/^(\.\.\/)+/, "").replace(/^routes\//, "").replace(/^_assets\//, "");
+  // URL 解码：中文文件名在 Markdown 里常被编码成 %E4%B8%AD
+  try { key = decodeURIComponent(key); } catch {}
+  if (!key) return null;
+
+  const f = pool[key] || pool[key.split("/").pop()];
+  if (!f || f.isDir) return null;      // 目录、未知路径都交回上层，不硬造块
+
+  const url = assetUrl(f.path);
+  const label = alt || String(f.name || key).replace(/\.[^.]+$/, "");
+  const size = fmtSize(f.size);
+
+  if (f.type === "image") {
+    return `<figure class="blk blk-img" data-ref-card="${escapeAttr(f.path)}">` +
+      `<img src="${escapeAttr(url)}" alt="${escapeAttr(label)}" loading="lazy">` +
+      `<figcaption>${escapeHtml(label)} · ${escapeHtml(size)}</figcaption></figure>`;
+  }
+  if (f.type === "video") {
+    return `<figure class="blk blk-media" data-ref-card="${escapeAttr(f.path)}">` +
+      `<video src="${escapeAttr(url)}" controls preload="metadata"></video>` +
+      `<figcaption>${escapeHtml(label)} · 视频 · ${escapeHtml(size)}</figcaption></figure>`;
+  }
+  if (f.type === "audio") {
+    return `<figure class="blk blk-media" data-ref-card="${escapeAttr(f.path)}">` +
+      `<audio src="${escapeAttr(url)}" controls preload="none"></audio>` +
+      `<figcaption>${escapeHtml(label)} · 音频 · ${escapeHtml(size)}</figcaption></figure>`;
+  }
+  // PDF / Office / 压缩包 / 其他：给一个能点的文件条，点了在弹窗里预览
+  const isPdf = /\.pdf$/i.test(f.path);
+  return `<span class="blk blk-file" data-tint="${escapeAttr(f.type || "file")}" data-ref-card="${escapeAttr(f.path)}">` +
+    `<span class="blk-ic">${icon(TYPE_ICONS[f.type] || "file", 18)}</span>` +
+    `<span class="blk-b"><span class="blk-t">${escapeHtml(label)}</span>` +
+    `<span class="blk-m">${escapeHtml(TYPE_LABEL[f.type] || (isPdf ? "PDF" : "文件"))} · ${escapeHtml(size)}</span></span>` +
+    `<span class="blk-x">打开 ›</span></span>`;
+};
+
 window.__refCard = (name, alias) => {
   const key = String(name || "").replace(/^\.\//, "");
   const pool = window.__assets || {};
@@ -3705,23 +3815,38 @@ hana.ready().then(() => {
   loadCategories().catch(() => {});
 }).catch(() => {});
 
-// 拉一份 _assets 全量清单（扁平化，含子目录），供 refCard 查。
-// 深度限 3 层，防用户建深层目录把树拉爆。
+// 拉 _assets 全量扁平索引，供 refCard 查。
+// 用 /assets/index 而不是自己递归 /assets/list：
+//   - 后端一次给全、带 mtime 指纹缓存，不会像前端递归那样被深度上限截断
+//   - 前端递归在深目录/多文件时会打出几十个请求，慢且容易漏
 async function refreshAssetIndex() {
   const idx = {};
-  const walk = async (rel, depth) => {
-    if (depth > 3) return;
-    const r = await API.get(`/assets/list?rel=${encodeURIComponent(rel)}`);
-    if (!r.ok) return;
-    for (const f of r.items || []) {
-      idx[f.name] = f;
-      idx[f.path] = f;
-      if (f.isDir) await walk(f.path, depth + 1);
+  try {
+    const r = await API.get("/assets/index");
+    if (r.ok) {
+      for (const f of r.items || []) {
+        idx[f.name] = f;
+        idx[f.path] = f;
+        // 不带扩展名的相对路径也建一份索引：![[子目录/名字]] 这种写法能查到
+        const noExt = f.path.replace(/\.[^./]+$/, "");
+        if (noExt !== f.path) idx[noExt] = f;
+      }
     }
-  };
-  await walk("", 0);
+  } catch { /* 索引拉不到时 refCard 会显示"文件不存在"，不崩 */ }
   window.__assets = idx;
+  // 有索引了就立刻重绘一次正文，否则首页那些早渲染好的笔记还是"文件不存在"
+  try { if (typeof rerenderOpenEntry === "function") rerenderOpenEntry(); } catch {}
   return idx;
+}
+
+// 资源有变动（上传/删除/改名/移动）后，正文里的卡片要跟着刷新。
+// 做法是重新 selectEntry 一次——它内部会拉最新数据并重绘，不用另写一套。
+// 只在查看模式触发：编辑中重绘会把用户正在打的字冲掉。
+function rerenderOpenEntry() {
+  if (!state.selected) return;
+  if (!$("edit")?.hidden) return;              // 正在编辑，不打扰
+  if (!$("detail")?.hidden) return;            // 不在详情页
+  selectEntry(state.selected).catch(() => {});
 }
 
 // 卡片点击：跳到文件管理器并选中
@@ -3729,10 +3854,31 @@ function bindRefCards(root) {
   for (const c of (root || document).querySelectorAll("[data-ref-card]")) {
     if (c.__bound) continue;
     c.__bound = true;
+    // 视频/音频本身有控件，点播放器不该跳走
+    if (c.querySelector("video, audio")) continue;
     c.addEventListener("click", () => {
       const fp = c.dataset.refCard;
-      const dir = fp.split("/").slice(0, -1).join("/");
-      openFiles(dir).then(() => selectFile(fp));
+      const isImg = c.classList.contains("blk-img") || c.querySelector("img");
+      if (isImg) return lightbox(assetUrl(fp), fp.split("/").pop());
+      // 图片以外的都进预览弹窗（PDF 内嵌、文本显示内容、其余给打开入口）
+      return previewAsset(fp);
     });
   }
+}
+
+// 图片放大：点一下看大图，再点关掉。比"跳去文件管理器"直接得多。
+function lightbox(url, name) {
+  const old = document.getElementById("lightbox");
+  if (old) old.remove();
+  const box = document.createElement("div");
+  box.id = "lightbox";
+  box.className = "lightbox";
+  box.innerHTML =
+    `<img src="${escapeAttr(url)}" alt="${escapeAttr(name || "")}">` +
+    `<div class="lb-cap">${escapeHtml(name || "")}</div>`;
+  document.body.appendChild(box);
+  const close = () => { box.remove(); document.removeEventListener("keydown", onEsc); };
+  const onEsc = (ev) => { if (ev.key === "Escape") close(); };
+  box.addEventListener("click", close);
+  document.addEventListener("keydown", onEsc);
 }

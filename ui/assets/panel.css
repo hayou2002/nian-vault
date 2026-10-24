@@ -886,3 +886,60 @@ button.ai-pill:hover {
 .clip-fields .m-input { flex: 1 1 auto; min-width: 0; }
 .clip-fields #clip-cat { flex: 0 0 auto; max-width: 110px; }
 .clip-fields #clip-tags { flex: 0 0 32%; max-width: 170px; }
+
+/* ===== 正文里的资源块（C 方案：附件在正文里是一等公民）===== */
+/* 图片：整块宽，说明在下方，不挤在行里 */
+.md figure.blk-img { margin: 10px 0; }
+.md figure.blk-img img { display: block; max-width: 100%; height: auto;
+  border: 1px solid var(--c-border); border-radius: var(--r); }
+.md figure.blk-img figcaption { margin-top: 4px; font-size: 11.5px; color: var(--c-muted); }
+
+/* 视频/音频：播放器本身就是块，宽度撑满可用空间 */
+.md figure.blk-media { margin: 10px 0; }
+.md figure.blk-media video { display: block; width: 100%; max-height: 60vh;
+  background: #000; border-radius: var(--r); }
+.md figure.blk-media audio { display: block; width: 100%; }
+.md figure.blk-media figcaption { margin-top: 4px; font-size: 11.5px; color: var(--c-muted); }
+
+/* 文件（PDF / Office / 压缩包 / 其他）：一条能点的行，不是一行死字 */
+.md .blk-file { display: flex; align-items: center; gap: 9px; margin: 8px 0;
+  padding: 8px 10px; cursor: pointer;
+  border: 1px solid var(--c-border); border-radius: var(--r);
+  background: var(--c-bg-sub, rgb(0 0 0 / .02)); }
+.md .blk-file:hover { border-color: var(--c-accent); background: var(--c-accent-light); }
+.md .blk-file .blk-ic { flex: none; display: inline-flex; color: var(--c-muted); }
+.md .blk-file .blk-b { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.md .blk-file .blk-t { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.md .blk-file .blk-m { font-size: 11px; color: var(--c-muted); }
+.md .blk-file .blk-x { flex: none; font-size: 11.5px; color: var(--c-accent); }
+
+/* 按类型着色带：一眼分得出是文档还是表格还是压缩包 */
+.md .blk-file[data-tint="image"] .blk-ic { color: #2f7fd1; }
+.md .blk-file[data-tint="video"] .blk-ic { color: #b4457b; }
+.md .blk-file[data-tint="audio"] .blk-ic { color: #9a6a20; }
+.md .blk-file[data-tint="file"]  .blk-ic { color: #666; }
+
+/* ===== 附件弹窗：独立遮罩，不跟通用 modal 抢 ===== */
+.attach-overlay { position: fixed; inset: 0; z-index: 90;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px; background: rgb(0 0 0 / .42); }
+.attach-modal { display: flex; flex-direction: column; width: min(560px, 100%);
+  max-height: min(76vh, 700px); overflow: hidden;
+  background: var(--c-bg); border: 1px solid var(--c-border);
+  border-radius: calc(var(--r) * 1.4); box-shadow: 0 18px 48px rgb(0 0 0 / .22); }
+.attach-head { display: flex; align-items: center; gap: 8px;
+  padding: 11px 14px; border-bottom: 1px solid var(--c-border); flex: none; }
+.attach-title { flex: 1; font-size: 13.5px; font-weight: 600; }
+.attach-close { flex: none; width: 24px; height: 24px; padding: 0; cursor: pointer;
+  border: none; border-radius: 6px; background: none; color: var(--c-muted); font-size: 14px; }
+.attach-close:hover { background: var(--c-accent-light); color: var(--c-text); }
+.attach-dialog-host { flex: 1; min-height: 0; overflow: hidden; }
+.attach-dialog-host #attach-panel { padding: 12px 14px; height: 100%; }
+
+/* ===== 图片灯箱：正文里点图放大看 ===== */
+.lightbox { position: fixed; inset: 0; z-index: 120; cursor: zoom-out;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; padding: 28px; background: rgb(0 0 0 / .82); }
+.lightbox img { max-width: 100%; max-height: calc(100% - 32px); object-fit: contain;
+  border-radius: 6px; box-shadow: 0 10px 40px rgb(0 0 0 / .5); }
+.lightbox .lb-cap { color: rgb(255 255 255 / .78); font-size: 12px; }
