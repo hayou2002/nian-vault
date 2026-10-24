@@ -2062,12 +2062,13 @@ async function renameAssetFlow(fp, isDir) {
   if (!nn) return;
   const r = await API.post("/assets/rename", { rel: fp, name: nn });
   if (!r.ok) return toast(`❌ ${r.error}`);
-  toast("✓ 已重命名");
   await loadFiles();
-  // 改名会让正文里的 ![[旧名]] 断链，提醒一声
-  const refs = await API.get(`/assets/refs?rel=${encodeURIComponent(r.to)}`);
-  if (refs.ok && (refs.refs || []).length) {
-    toast(`⚠ 注意：有 ${refs.refs.length} 篇笔记里写的是旧名，需要手动改`, 6000);
+  // 后端已经顺手把正文里的 ![[旧名]] 改成了新名，这里只需报告结果。
+  // patched 是改了几篇；0 表示没有正文引用它（或引用的形态不在改写范围内）。
+  if (r.patched > 0) {
+    toast(`✓ 已重命名，并自动更新了 ${r.patched} 篇笔记里的引用`, 5000);
+  } else {
+    toast("✓ 已重命名", 3000);
   }
 }
 
