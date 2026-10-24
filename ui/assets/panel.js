@@ -148,11 +148,13 @@ async function loadCategories() {
   state.categories = r.categories || [];
   await refreshTree();
   renderCategories();
+  // 资源索引也在这里刷，失败不阻塞
+  refreshAssetIndex().catch(() => {});
 }
 
-// 资源索引也在这里刷：![[名]] 卡片要靠它查文件在不在。
+// 资源索引在 loadCategories 里刷：![[名]] 卡片要靠它查文件在不在。
 // 失败不影响主流程（卡片会显示"文件不存在"，但不该让面板白屏）。
-refreshAssetIndex().catch(() => {});
+// 不要放模块顶层——那时 surface 还没就绪，请求必失败。
 
 function renameCategory(from) {
   const cur = state.categories.find((c) => c.name === from);
@@ -2167,7 +2169,11 @@ function showHome() {
   show($("detail-hint"), false);
   state.selected = null;
   setActive($("btn-home"), true);
-  loadHome();
+  // loadHome 是 async，必须接 .catch：
+  // try 包不住 floating promise 的 rejection，那会把整个进程带走。
+  Promise.resolve(loadHome()).catch((err) => {
+    console.warn("[nian-vault] 首页数据加载失败：", err);
+  });
   fitHomeToViewport();
 }
 
@@ -2223,24 +2229,33 @@ function showListView() {
 })();
 
 async function loadHome() {
-  const r = await API.get("/home");
-  if (!r.ok) return toast(`❌ ${r.error}`);
+  let r;
+  try {
+    r = await API.get("/home");
+  } catch (err) {
+    // 拉不到数据就保持首页的空态，不抛——抛出去会把调用方带崩
+    console.warn("[nian-vault] /home 请求失败：", err?.message || err);
+    return;
+  }
+  if (!r.ok) { toast(`❌ ${r.error}`); return; }
   const { todos = [], hiddenTodos = [], recent = [], homePinned = [], inbox = [], tree = [], tags = [], categories = [] } = r;
   const openCount = todos.reduce((s, g) => s + g.open, 0);
   const total = categories.reduce((s, c) => s + (c.count || 0), 0);
   $("home-stats").textContent = `${total} 条收藏 · ${todos.length} 篇有待办 · 未完成 ${openCount} 项`;
-  renderHomeEntries("home-inbox", inbox, "收件箱是空的，也没有待确认的收藏。对话里点「📥 收入念念收藏夹」可先挑选内容。");
-  // 收件箱没内容时，铺开/AI 整理/清空三个按钮去了也是空操作，藏起来
-  const inboxCount = inbox.length || state.categories.find((c) => c.name === "收件箱")?.count || 0;
-  show($("inbox-acts"), inboxCount > 0);
-  // 待确认候选拉取失败不能拖垮整个首页：它只是一小块，
-  // 但以前它是 await 链上的一环，一挂后面 todos/pinned/recent 全都不渲染。
-  renderClipStageSlot().catch((err) => console.warn("[nian-vault] 待确认区渲染失败", err));
-  renderHomeTodos(todos, hiddenTodos);
-  renderHomeEntries("home-pinned", homePinned, "还没有固定内容：打开一条笔记，点顶栏的 📌");
-  renderRecentCapped(recent);
-  renderTagCloud(tags);
-  renderCatBars(categories, total);
+  // 每块单独渲染：某块数据畸形只该让那一块空着，不该让整个首页消失
+  const blocks = [
+    () => renderHomeEntries("home-inbox", inbox, "收件箱是空的，也没有待确认的收藏。对话里点「📥 收入念念收藏夹」可先挑选内容。"),
+    () => { const inboxCount = inbox.length || state.categories.find((c) => c.name === "收件箱")?.count || 0; show($("inbox-acts"), inboxCount > 0); },
+    () => renderClipStageSlot().catch(() => {}),
+    () => renderHomeTodos(todos, hiddenTodos),
+    () => renderHomeEntries("home-pinned", homePinned, "还没有固定内容：打开一条笔记，点顶栏的 📌"),
+    () => renderRecentCapped(recent),
+    () => renderTagCloud(tags),
+    () => renderCatBars(categories, total),
+  ];
+  for (const b of blocks) {
+    try { b(); } catch (err) { console.warn("[nian-vault] 首页某块渲染失败：", err); }
+  }
 }
 
 // 最近打开：默认只显示 8 条，剩下的收在「展开全部」后面，不撑爆容器
@@ -2808,15 +2823,40 @@ refreshClipStage();
 window.addEventListener("focus", refreshClipStage);
 
 // ---------------- 启动 ----------------
-// 先不等握手就把总览画出来：握手在 headless/异常环境下可能永远不 resolve，
-// 那样整个面板就是一片空白。数据层自己会重试，界面先有东西看。
-try {
-  await loadStatus();
-  await loadCategories();
-  showHome();
-} catch (err) {
-  document.body.insertAdjacentHTML("afterbegin",
-    `<p style="padding:16px;color:#c0504d">界面加载失败：${escapeHtml(err?.message || String(err))}</p>`);
-}
+// 铁律：界面必须先出来，数据后到。
+// 以前 loadStatus() 在链首，它一抛（surface 未就绪、权限没批、库路径失效）
+// 整个 try 中断，showHome() 永远不执行 → 用户看到一片空白加一行红字。
+// 现在反过来：先画骨架，再逐项拉数据，每项单独容错。
+showView("detail");
+show($("detail-hint"), true);
+$("v-title").textContent = "";
+$("v-meta").innerHTML = "";
 
-hana.ready().catch(() => {});
+(async () => {
+  const steps = [
+    ["状态", loadStatus],
+    ["分类", loadCategories],
+  ];
+  for (const [label, fn] of steps) {
+    try {
+      await fn();
+    } catch (err) {
+      // 单项失败只报告那一项，不阻塞后面的，更不阻塞界面
+      console.warn(`[nian-vault] ${label}加载失败：`, err?.message || err);
+      toast(`⚠ ${label}没加载出来：${err?.message || err}`, 5000);
+    }
+  }
+  // 最后一定落到总览：哪怕上面全挂，首页的壳子和空态提示也在
+  try {
+    showHome();
+  } catch (err) {
+    console.warn("[nian-vault] 首页渲染失败：", err);
+    $("home").hidden = false;
+  }
+})();
+
+hana.ready().then(() => {
+  // 握手完成后重拉一次：启动时 surface 可能还没就绪，那批请求全失败了
+  loadStatus().catch(() => {});
+  loadCategories().catch(() => {});
+}).catch(() => {});

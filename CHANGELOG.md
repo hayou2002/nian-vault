@@ -1,5 +1,47 @@
 # 念念收藏夹 - 更新日志
 
+## [0.9.1] - 2026-10-24
+
+### 修 0.9.0 引入的三个 bug（用户反馈"整体用不了"）
+
+**P0 · 启动链一抛就白屏**
+
+`loadStatus()` 在启动链最前面，它一抛（surface 未就绪、权限没批、库路径失效）整个 `try` 中断，`showHome()` 永远不执行。用户看到一片空白加一行红字。
+
+更糟的是 `loadHome` 是 floating promise，它的 rejection 连 `try` 都抓不住，直接把进程带走。
+
+改成：先画骨架 → 逐项拉数据、每项单独容错 → 最后一定落到总览。`hana.ready()` 完成后重拉一次（启动时 surface 可能还没好）。`loadHome` 内部改成块级渲染，某块数据畸形只让那一块空着。
+
+**P0 · 资源路由永远匹配不到**
+
+我写了 `app.get("/asset/:p{\\w+}*")`。宿主的 `buildWildcardRegExp` 只认识 `路径/*` 这种结尾，`{\\w+}` 会被当字面字符，生成的正则是 `^\/asset\/:p{\\w\+}\*$`——只匹配字面字符串，**永远命中不了任何真实路径**。
+
+后果：Markdown 里所有图片显示不出来（`markdown.js` 拼的是 `../routes/_assets/xxx.png`）。
+
+改成 `/asset/*` 和 `/_assets/*`（已验证生成 `^\/_assets(?:\/.*)$`，能匹配任意深度）。
+
+**P0 · `wrap` 把 Response 摊平**
+
+`wrap` 统一 `c.json({ok:true, ...await fn(c)})`。资源路由返回的是 `c.body(buf)`（Response），spread 会把它拆成 `{ok, status, json:fn}`，**前端拿不到图片字节**。
+
+改成先识别 Response 原样返回。
+
+顺手：`/entries` 的 `c.req.query()` 加 null 防护（某些宿主实现下无参调用返回 null，那会是面板生命线崩掉）。
+
+### 新增两个测试（都是被现有测试的宽松桩放过去的）
+
+**`boot-check.mjs`（8 条）**——复现真实启动：让 `fetch` 全抛、`ready()` 永不 resolve，验证不白屏。
+
+**有效性已验证**：把修复回退成旧版启动链，两条断言精确失败，报的正是用户截图里的现象（`home.hidden=true` + 红字错误条）。
+
+**`smoke-strict.mjs`（19 条）**——复刻宿主 `buildWildcardRegExp` 的严格路由匹配，逐个打面板真实会用的接口。现有 `routes-check` 用 `endsWith` 匹配，路径模式写错也发现不了。
+
+### 测试
+
+ui 78 / vault 203 / routes 76 / boot 8 / smoke-strict 19，合计 **384 项全绿**。
+
+## [0.9.0] - 2026-10-24
+
 ## [0.9.0] - 2026-10-24
 
 ### 多类型收藏 · 第二阶段：文件管理器 + MD 嵌入
