@@ -17,6 +17,44 @@ function assetUrl(rel) {
   catch { return `/_assets/${clean}`; }
 }
 
+// ---- 用系统应用打开一个本机文件 ----
+// 封装原因：直接写 hana.ui.external.open 在沙箱里缺能力时会抛
+// "Cannot read properties of undefined (reading 'open')"——用户看不懂。
+// 这里把每种失败都翻成人话，并且退化到"复制路径"让用户自己打开。
+async function openWithSystem(fp) {
+  const abs = String(fp || "");
+  if (!abs) return;
+  // 优先 resources.open（本地文件引用，语义最正）
+  try {
+    const api = (typeof hana !== "undefined" && hana && hana.resources) || null;
+    if (api && typeof api.open === "function") {
+      const r = await api.open({ resource: { kind: "local-file", path: abs } });
+      if (r && r.opened === false) throw new Error("宿主没有打开它");
+      return;
+    }
+  } catch (e) {
+    // 继续试下一种
+    console.warn("[nian-vault] resources.open 失败：", e?.message || e);
+  }
+  // 再试 external.open
+  try {
+    const ext = (typeof hana !== "undefined" && hana && hana.ui && hana.ui.external) || null;
+    if (ext && typeof ext.open === "function") {
+      await ext.open({ path: abs });
+      return;
+    }
+  } catch (e) {
+    console.warn("[nian-vault] external.open 失败：", e?.message || e);
+  }
+  // 都不行：把路径给用户，并说清为什么
+  try {
+    await hana.ui.clipboard.writeText({ text: abs });
+    toast(`这个环境打不开系统应用，已把路径复制到剪贴板：${abs.split(/[\\/]/).pop()}`, 7000);
+  } catch {
+    toast("这个环境打不开系统应用，也没法写剪贴板。路径：" + abs, 8000);
+  }
+}
+
 // ---- 资源图片显示：blob URL（这是图片能显示的唯一正确方式）----
 // 宿主给 App 的所有路由都要求凭据（surface session 头），
 // 而 <img src="绝对地址"> 发请求带不了自定义头，所以必然 403 → 图片全裂。
@@ -2349,11 +2387,7 @@ function renderFilesBody() {
       clearTimeout(clickTimer);
       clickTimer = setTimeout(() => {
         if (isExternal) {
-          if (!isDir) {
-            hana.ui.external.open({ path: fp }).catch((err) =>
-              toast(`❌ 打不开：${err?.message || err}`, 5000));
-            return;
-          }
+          if (!isDir) { openWithSystem(fp); return; }
           // 文件夹。两种情形：
           //   a) 已经在某个外部目录内部（extCtx 有值）→ 相对它算子路径
           //   b) 在库内根列表里点的外部快捷方式（extCtx 为 null）→ 它自己就是根
@@ -2792,9 +2826,9 @@ async function selectFile(fp) {
 function extRowMenu(ev, item) {
   const fp = item.path;
   const items = [
-    { label: item.isDir ? "📂 进入" : "📂 打开", run: () => {
-        if (item.isDir) openExtDir(fp, "");
-        else hana.ui.external.open({ path: fp }).catch((e) => toast(`❌ ${e?.message || e}`, 5000));
+    { label: item.isDir ? "📂 进入" : "📂 打开", run: async () => {
+        if (item.isDir) await openExtDir(fp, "");
+        else await openWithSystem(fp);
       } },
     { label: "📁 打开文件位置", run: () => revealAbsPath(fp) },
     { label: "🔗 复制路径", run: () => hana.ui.clipboard.writeText({ text: fp }) },
@@ -4305,8 +4339,7 @@ function bindRefCards(root) {
         ev.preventDefault();
         const abs = c.dataset.extPath;
         if (!abs) return;
-        try { await hana.ui.external.open({ path: abs }); }
-        catch (err) { toast(`❌ 打不开：${err?.message || err}`, 5000); }
+        await openWithSystem(abs);
       });
       continue;
     }

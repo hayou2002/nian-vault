@@ -1,5 +1,51 @@
 # 念念收藏夹 - 更新日志
 
+## [0.15.1] - 2026-10-24
+
+### 修「打不开」：目录被当成文件了
+
+你截图里 `OH-WorkSpace` 显示文档图标 + `0 B` + 「未引用」，说明它被判定成**文件**而不是目录。
+点它时走了「用系统应用打开一个文件」那条路，可那个路径是目录，于是报
+`Cannot read properties of undefined (reading 'open')`。
+
+**根因在 `lib/storage.js` 的 `ResourceFs.stat`**：
+
+    isDir: !!(st.isDir ?? st.isDirectory)
+
+宿主返回的 stat 可能用 `isDir` / `isDirectory` / `type: "directory"` / `mode` 位
+任一种方式表达目录。只认前两种，其余情况全被当成文件。
+
+现在加了 `detectIsDir()`，六种表达方式都认：
+`isDir` / `isDirectory` / `type:"directory"` / `type:"folder"` / `mode` 位 / `isFile:false && size:null`。
+
+### 修「报错看不懂」
+
+原来直接 `hana.ui.external.open(...)`。沙箱里缺这个能力时抛的是
+`Cannot read properties of undefined (reading 'open')`——完全看不出发生了什么。
+
+现在统一走 `openWithSystem()`：
+1. 先试 `hana.resources.open`（本地文件引用，语义最正）
+2. 再试 `hana.ui.external.open`
+3. 都不行就把路径复制到剪贴板，并明说「这个环境打不开系统应用」
+
+每一步失败都有 `console.warn`，不再静默。
+
+### 顺带修掉一个我自己埋的隐患
+
+上一版我为了判断「是不是目录」，在 `externalRefListFresh` 里用 `fs.list()` 试了一次。
+**这不可靠**：`NodeFs.list` 对文件也会 catch 返回 `[]`，
+而 `Array.isArray([])` 恒为 true —— 于是任何文件都会被误判成目录。
+
+现在直接信 storage 层的 `st.isDir`（它已经能可靠区分），把这个探测去掉了。
+
+### 测试
+
+新增 `isdir-detect-check`（12 项）：六种目录表达都要认出、四种文件表达都不能误判、
+  stat 拿不到时返回 null 不抛错。
+新增 `nodefs-isdir-check`（4 项）：在真实文件系统上验证目录/文件区分，
+  并**实证**了 `list()` 对文件也返回空数组这件事。
+
+24 个测试文件 **975 项** + 28 项视觉体检，全绿。
 ## [0.15.0] - 2026-10-24
 
 ### 引用文件夹直接进文件网格，删掉「库外引用」分区
