@@ -958,6 +958,7 @@ document.addEventListener("click", (ev) => {
 $("mi-storage").addEventListener("click", () => { $("side-menu").hidden = true; openStorageDialog(); });
 $("mi-backup").addEventListener("click", () => { $("side-menu").hidden = true; openBackupDialog(); });
 $("mi-settings").addEventListener("click", () => { $("side-menu").hidden = true; openAiSettings(); });
+$("mi-rules").addEventListener("click", () => { $("side-menu").hidden = true; openRulesDialog(); });
 
 $("btn-toggle").addEventListener("click", async () => {
   if ($("edit").hidden) {
@@ -1105,6 +1106,35 @@ async function openClipStageDialog() {
     onMount: () => {
       if (!items.length) $("m-ok").disabled = true;
       else $("m-ok").disabled = false;
+    },
+  });
+}
+
+// ---- 库规则（RULES.md）----
+// 规则是家规：AI 按它办事。这里让人能看、能改。
+async function openRulesDialog() {
+  const r = await API.get("/rules");
+  const rules = r.ok ? r.rules || "" : "";
+  const exists = r.ok && r.exists;
+  dialog({
+    title: "📏 库规则",
+    bodyHtml:
+      (exists
+        ? `<p class="muted">这些规则会随每次 AI 整理、问答一起读入。改完保存即生效。</p>`
+        : `<p class="muted">这个库还没有规则文件。AI 目前自由发挥——想让它按你的规矩办事，就写一份。</p>`) +
+      `<textarea id="d-rules" class="rules-editor" spellcheck="false" placeholder="# 家规&#10;&#10;比如：分类按使用场景分，不按内容类型分；标签 2~4 个；大文件只引用不复制。">${escapeHtml(rules)}</textarea>` +
+      `<p class="muted" style="margin-top:6px">文件位置：<code>${escapeHtml(r.path || "RULES.md")}</code></p>`,
+    okText: "保存",
+    onOk: async () => {
+      const txt = $("d-rules").value;
+      const w = await API.post("/rules", { content: txt });
+      if (!w.ok) { toast(`❌ ${w.error}`); return false; }
+      toast("✓ 规则已保存，AI 下次整理就会按它办");
+    },
+    onMount: () => {
+      const ta = $("d-rules");
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
     },
   });
 }
@@ -1672,20 +1702,25 @@ function renderRefView(e) {
 // 一屏 20+ 行；卡片墙一屏 6 张，找个文件要滚很久。
 // 库外引用（D:\xxx）也在这里显示，标成"库外"。
 let filesDir = "";        // 当前所在目录，相对 _assets，空 = 根
-let filesSel = "";        // 选中的文件/目录 rel 路径
+let filesSel = "";        // 单选选中的文件/目录 rel 路径
 let filesItems = [];      // 当前层内容
+let filesPicked = new Set(); // 多选：勾选的 rel 路径
+let filesMode = localStorage.getItem("nv.filesMode") || "list"; // list | grid
 
 async function openFiles(rel = "") {
   filesDir = rel || "";
   filesSel = "";
+  filesPicked = new Set();
   showView("files");
   setActive($("btn-home"), false);
+  renderFilesModeBtns();
   await loadFiles();
 }
 
 async function loadFilesTo(rel) {
   filesDir = rel || "";
   filesSel = "";
+  filesPicked = new Set();
   await loadFiles();
 }
 
@@ -1713,32 +1748,69 @@ function renderFiles() {
 
   const totalSize = filesItems.reduce((s, x) => s + (x.size || 0), 0);
   $("files-sub").textContent = filesItems.length ? `${filesItems.length} 项 · ${fmtSize(totalSize)}` : "空";
+  renderFilesBatchBar();
+  renderFilesModeBtns();
 
   if (!filesItems.length) {
     $("files-list").innerHTML =
       `<div class="files-empty">${icon("folder", 30)}<p>这个文件夹是空的。</p>` +
-      `<p class="muted">点右上角「⬆ 上传」把文件放进库；或者去笔记里用「插入文件」。</p></div>`;
+      `<p class="muted">点右上角「🔗 引用已有」把本机的文件夹收进来，或「⬆ 上传」放新文件。</p></div>`;
     return;
   }
 
-  $("files-list").innerHTML = filesItems.map((f) => {
+  const rowHtml = (f) => {
+    const picked = filesPicked.has(f.path);
     const sel = f.path === filesSel ? " selected" : "";
+    // 类型色带：文件夹一种色，其余按类型分。一眼分出文件和目录，不用细看图标
+    const tint = f.isDir ? "dir" : String(f.type || "file");
     const ic = f.isDir ? icon("folder", 16) : icon(TYPE_ICONS[f.type] || "file", 16);
     const meta = f.isDir
       ? `${f.count} 项`
       : `${fmtSize(f.size)}${f.mtime ? ` · ${String(f.mtime).slice(0, 10)}` : ""}`;
-    return `<div class="frow${sel}" data-fp="${escapeAttr(f.path)}" data-dir="${f.isDir ? "1" : "0"}">` +
+    return `<div class="frow frow-${tint}${sel}${picked ? " picked" : ""}" data-fp="${escapeAttr(f.path)}" data-dir="${f.isDir ? "1" : "0"}" draggable="true">` +
+      `<input type="checkbox" class="frow-cb" data-cb="${escapeAttr(f.path)}"${picked ? " checked" : ""} title="勾选后可批量操作">` +
       `<span class="frow-ic">${ic}</span>` +
       `<span class="frow-n">${escapeHtml(f.name)}</span>` +
+      `<span class="frow-t">${escapeHtml(f.isDir ? "文件夹" : TYPE_LABEL[f.type] || "文件")}</span>` +
       `<span class="frow-m">${escapeHtml(meta)}</span>` +
       `<span class="frow-r" data-refs="${escapeAttr(f.path)}"></span>` +
       `</div>`;
-  }).join("");
+  };
 
-  for (const row of $("files-list").querySelectorAll(".frow")) {
+  const gridHtml = (f) => {
+    const picked = filesPicked.has(f.path);
+    const tint = f.isDir ? "dir" : String(f.type || "file");
+    const thumb = !f.isDir && f.type === "image"
+      ? `<img class="fg-thumb" src="../routes/_assets/${escapeAttr(f.path.replace(/^_assets\//, ""))}" loading="lazy" alt="">`
+      : `<span class="fg-ic">${f.isDir ? icon("folder", 26) : icon(TYPE_ICONS[f.type] || "file", 26)}</span>`;
+    return `<div class="fgrid fgrid-${tint}${picked ? " picked" : ""}" data-fp="${escapeAttr(f.path)}" data-dir="${f.isDir ? "1" : "0"}" draggable="true">` +
+      `<input type="checkbox" class="frow-cb" data-cb="${escapeAttr(f.path)}"${picked ? " checked" : ""}>` +
+      thumb +
+      `<span class="fg-n" title="${escapeAttr(f.name)}">${escapeHtml(f.name)}</span>` +
+      `<span class="fg-m">${f.isDir ? `${f.count} 项` : fmtSize(f.size)}</span>` +
+      `</div>`;
+  };
+
+  const box = $("files-list");
+  box.className = filesMode === "grid" ? "files-list files-grid" : "files-list";
+  const html = (f) => (filesMode === "grid" ? gridHtml(f) : rowHtml(f));
+  box.innerHTML = filesItems.map(html).join("");
+
+  for (const row of box.querySelectorAll("[data-fp]")) {
     const fp = row.dataset.fp;
     const isDir = row.dataset.dir === "1";
-    row.addEventListener("click", () => selectFile(fp));
+    const cb = row.querySelector(".frow-cb");
+    if (cb) {
+      cb.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        togglePick(fp, !filesPicked.has(fp));
+      });
+    }
+    row.addEventListener("click", (ev) => {
+      //  Ctrl/Shift 点 = 多选；普通点 = 单选
+      if (ev.ctrlKey || ev.metaKey || ev.shiftKey) { togglePick(fp, !filesPicked.has(fp)); return; }
+      selectFile(fp);
+    });
     row.addEventListener("dblclick", () => {
       if (isDir) loadFilesTo(fp);
       else openAssetFile(fp);
@@ -1748,13 +1820,169 @@ function renderFiles() {
       selectFile(fp);
       fileRowMenu(ev, fp, isDir);
     });
+    // 拖拽：文件行 → 文件夹行 = 移动
+    row.addEventListener("dragstart", (ev) => {
+      const srcs = filesPicked.size ? [...filesPicked] : [fp];
+      ev.dataTransfer.setData("text/plain", JSON.stringify(srcs));
+      ev.dataTransfer.effectAllowed = "move";
+      row.classList.add("dragging");
+    });
+    row.addEventListener("dragend", () => row.classList.remove("dragging"));
+    if (isDir) {
+      row.addEventListener("dragover", (ev) => { ev.preventDefault(); row.classList.add("drop-on"); });
+      row.addEventListener("dragleave", () => row.classList.remove("drop-on"));
+      row.addEventListener("drop", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        row.classList.remove("drop-on");
+        let srcs = [];
+        try { srcs = JSON.parse(ev.dataTransfer.getData("text/plain") || "[]"); } catch {}
+        if (!srcs.length) return;
+        moveAssetsFlow(srcs, fp);
+      });
+    }
   }
+
+  // 空白处松开 = 移到当前层
+  box.addEventListener("dragover", (ev) => ev.preventDefault());
+  box.addEventListener("drop", (ev) => {
+    if (ev.target !== box) return;
+    ev.preventDefault();
+    let srcs = [];
+    try { srcs = JSON.parse(ev.dataTransfer.getData("text/plain") || "[]"); } catch {}
+    if (srcs.length) moveAssetsFlow(srcs, filesDir || "_assets");
+  });
+
+  // 引用数异步填，不阻塞渲染
+  for (const cell of box.querySelectorAll("[data-refs]")) {
+    const pp = cell.dataset.refs;
+    API.get(`/assets/refs?rel=${encodeURIComponent(pp)}`).then((r) => {
+      const k = r.ok ? (r.refs || []).length : 0;
+      cell.innerHTML = k ? `<button class="frow-ref" title="被 ${k} 篇笔记引用，点开看是哪几篇">📎 ${k}</button>` : "";
+      const b = cell.querySelector(".frow-ref");
+      if (b) b.addEventListener("click", (ev) => { ev.stopPropagation(); showRefs(pp); });
+    }).catch(() => {});
+  }
+}
+
+// ---- 多选 / 批量 ----
+function togglePick(fp, on) {
+  if (on) filesPicked.add(fp); else filesPicked.delete(fp);
+  // 局部刷新勾选态，不重画整列（重画会打断拖拽和滚动）
+  for (const el of $("files-list").querySelectorAll("[data-fp]")) {
+    el.classList.toggle("picked", filesPicked.has(el.dataset.fp));
+    const cb = el.querySelector(".frow-cb");
+    if (cb) cb.checked = filesPicked.has(el.dataset.fp);
+  }
+  renderFilesBatchBar();
+}
+
+function renderFilesBatchBar() {
+  const bar = $("files-batch");
+  if (!bar) return;
+  bar.hidden = filesPicked.size === 0;
+  $("files-batch-n").textContent = `已选 ${filesPicked.size} 项`;
+  const all = $("files-batch-all");
+  if (all) all.checked = filesItems.length > 0 && filesItems.every((f) => filesPicked.has(f.path));
+}
+
+// 批量移动：选一批 → 问移到哪个文件夹 → 调 /assets/move
+async function moveAssetsFlow(srcs, destRel) {
+  const v = await API.get("/assets/list");
+  if (!v.ok) return toast(`❌ ${v.error}`);
+  // 只列文件夹当目标
+  const dirs = (v.items || []).filter((x) => x.isDir);
+  if (!dirs.length) return toast("库里还没有文件夹，先建一个");
+  const opts = dirs.map((d) =>
+    `<option value="${escapeAttr(d.path)}"${d.path === destRel ? " selected" : ""}>${escapeHtml(d.name)}（${d.count} 项）</option>`).join("");
+  const sub = `<p class="muted">移动 ${srcs.length} 项到：</p><select id="m-dest" class="m-input">${opts}</select>` +
+    `<p class="muted" style="margin-top:6px">正文里写死路径的引用（<code>![](_assets/旧名)</code>）会自动跟着改；<code>![[名]]</code> 按名字引用，不受影响。</p>`;
+  dialog({
+    title: "移动到文件夹",
+    bodyHtml: sub,
+    okText: "移动",
+    onOk: async () => {
+      const dest = $("m-dest").value;
+      // 不能把文件夹移进自己/自己的子孙
+      const bad = srcs.filter((s) => dest === s || dest.startsWith(s + "/"));
+      if (bad.length) { toast(`❌ 不能把文件夹移进它自己里面：${bad[0].split("/").pop()}`); return false; }
+      const r = await API.post("/assets/move", { paths: srcs, dest });
+      if (!r.ok) { toast(`❌ ${r.error}`); return false; }
+      filesPicked = new Set();
+      await loadFiles();
+      await refreshAssetIndex();
+      const msg = [`✓ 已移动 ${r.moved} 项`];
+      if (r.patched) msg.push(`${r.patched} 篇笔记的引用已跟着改`);
+      if (r.failed?.length) msg.push(`${r.failed.length} 项失败`);
+      toast(msg.join("，"), 4500);
+      if (r.failed?.length) console.warn("[nian-vault] 移动失败明细", r.failed);
+    },
+  });
+}
+
+// 批量删除
+async function deleteAssetsFlow(srcs) {
+  const chk = await API.post("/assets/delete-batch", { paths: srcs });
+  if (!chk.ok && !chk.needConfirm) return toast(`❌ ${chk.error}`);
+  if (chk.needConfirm) {
+    const names = (chk.refs || []).slice(0, 3).map((x) => `《${x.title}》`).join("、");
+    const more = (chk.refs || []).length > 3 ? ` 等 ${chk.refs.length} 篇` : "";
+    const yes = await confirmBox("删除选中的文件？",
+      `其中一些被 ${names}${more} 引用着。删掉后那些笔记里的卡片会变成「文件不存在」，笔记本身不受影响。`);
+    if (!yes) return;
+    const r = await API.post("/assets/delete-batch", { paths: srcs, force: true });
+    if (!r.ok) return toast(`❌ ${r.error}`);
+    filesPicked = new Set();
+    await loadFiles();
+    await loadCategories();
+    toast(`✓ 已删除 ${r.deleted} 项${r.failed?.length ? `，${r.failed.length} 项失败` : ""}`, 4000);
+    if (r.failed?.length) console.warn("[nian-vault] 删除失败明细", r.failed);
+    return;
+  }
+  const r = chk;
+  filesPicked = new Set();
+  await loadFiles();
+  toast(`✓ 已删除 ${r.deleted ?? r.done?.length ?? 0} 项`, 4000);
+}
+
+// 视图切换
+function renderFilesModeBtns() {
+  const l = $("btn-files-list"), g = $("btn-files-grid");
+  if (!l || !g) return;
+  l.classList.toggle("active", filesMode !== "grid");
+  g.classList.toggle("active", filesMode === "grid");
+}
+
+function setFilesMode(mode) {
+  filesMode = mode;
+  localStorage.setItem("nv.filesMode", mode);
+  renderFiles();
+}
+
+// 引用本机已有的文件夹/文件：存引用不复制
+async function collectExistingFlow() {
+  let picked = null;
+  try {
+    picked = await hana.resources.pick({ mode: "any" });
+  } catch (err) {
+    toast(`打开选择器失败：${err?.message || err}`, 4500);
+    return;
+  }
+  const r0 = picked?.resources?.[0] || picked?.[0] || null;
+  const target = r0?.path || r0?.uri;
+  if (!target) return toast("没有选中任何文件或文件夹");
+  const clean = String(target).replace(/^file:\/\//, "");
+  const r = await API.post("/ref/collect", { target: clean, category: state.filter.category || "收件箱" });
+  if (!r.ok) return toast(`❌ ${r.error}`, 4500);
+  await loadCategories();
+  await loadFiles();
+  toast(`✓ 已引用《${r.entry.title}》（只记位置，不复制文件）`, 4500);
 }
 
 // 选中一行：右侧显示操作条 + 引用数
 async function selectFile(fp) {
   filesSel = fp;
-  for (const row of $("files-list").querySelectorAll(".frow")) {
+  for (const row of $("files-list").querySelectorAll("[data-fp]")) {
     row.classList.toggle("selected", row.dataset.fp === fp);
   }
   // 异步填引用数，不阻塞选中反馈
@@ -1857,8 +2085,15 @@ async function showRefs(fp) {
   });
 }
 
-// 插入到笔记：选一篇，末尾追加 ![[名]]
-async function insertAssetToNote(fp) {
+// 插入到笔记：选一篇，把文件以 ![[名]] 追加进去。
+// names 可以是单个路径或路径数组（批量栏一次插入多个）。
+async function insertAssetsToNote(paths) {
+  const list = Array.isArray(paths) ? paths : [paths];
+  return insertAssetToNote(list[0], list);
+}
+
+async function insertAssetToNote(fp, allPaths = null) {
+  const names = (allPaths || [fp]).map((x) => x.split("/").pop());
   const name = fp.split("/").pop();
   const r = await API.get("/entries?limit=300");
   if (!r.ok) return toast(`❌ ${r.error}`);
@@ -1893,15 +2128,18 @@ function filesCatGuess() {
   return state.filter.category || "收件箱";
 }
 
-async function doInsert(entryId, name, closeDialog) {
+async function doInsert(entryId, name, closeDialog, allNames = null) {
   const cur = await API.get(`/entry?id=${encodeURIComponent(entryId)}`);
   if (!cur.ok) return toast(`❌ ${cur.error}`);
+  const names = allNames && allNames.length ? allNames : [name];
   const body = String(cur.entry.content || "").replace(/\s*$/, "");
-  const next = body + (body ? "\n\n" : "") + `![[${name}]]`;
+  // 多个文件各占一行，读起来是一份清单，而不是挤成一团
+  const block = names.map((x) => `![[${x}]]`).join("\n");
+  const next = body + (body ? "\n\n" : "") + block;
   const u = await API.post("/entry", { id: entryId, content: next });
   if (!u.ok) return toast(`❌ ${u.error}`);
   closeDialog();
-  toast(`✓ 已插入到《${u.entry.title}》`);
+  toast(`✓ 已插入 ${names.length} 个文件到《${u.entry.title}》`);
   await loadCategories();
   await loadEntries();
   await loadFiles();
@@ -1927,6 +2165,95 @@ async function renderFilesExt() {
       await selectEntry(li.dataset.ext);
     });
   }
+}
+
+// ---- AI 整理建议（C 批）----
+// 对当前层（或勾选的）文件要一份「放哪 + 改名 + 一句话说明」的建议。
+// 建议就是建议：默认什么都不勾，用户自己点要采纳的。
+async function openAiOrganizeFiles() {
+  const scope = filesPicked.size ? filesItems.filter((f) => filesPicked.has(f.path)) : filesItems;
+  if (!scope.length) return toast("这个文件夹是空的");
+  const loading = dialog({
+    title: "🤖 AI 整理建议",
+    bodyHtml: `<p class="muted">正在看 ${scope.length} 个文件…</p>`,
+    okText: "取消",
+    onOk: () => {},
+  });
+  let r = null;
+  try {
+    r = await API.post("/ai/organize-files", { items: scope });
+  } catch (err) {
+    loading();
+    toast(`❌ AI 请求失败：${err?.message || err}`, 4500);
+    return;
+  }
+  loading();
+  if (!r || r.ok === false) { toast(`❌ ${r?.error || "AI 没返回结果"}`); return; }
+  renderAiSuggestions(r);
+}
+
+function renderAiSuggestions(r) {
+  const list = r.suggestions || [];
+  if (!list.length) { toast("AI 没给出建议"); return; }
+  const dirOpts = (r.dirs || []).map((d) => `<option value="${escapeAttr(d)}">${escapeHtml(d)}</option>`).join("");
+  const rows = list.map((s, i) => {
+    const dirSel = s.dir && s.dir !== "保持原位" ? ` selected` : "";
+    return `<div class="ai-sug" data-i="${i}">` +
+      `<label class="ai-sug-cb"><input type="checkbox" class="ai-sug-check" value="${i}"${dirSel ? " checked" : ""}></label>` +
+      `<span class="ai-sug-n" title="${escapeAttr(s.path)}">${escapeHtml(s.name)}</span>` +
+      `<span class="ai-sug-note">${escapeHtml(s.note || "")}</span>` +
+      `<select class="ai-sug-dir" data-i="${i}">` +
+      `<option value="保持原位">保持原位</option>` +
+      (r.dirs || []).map((d) => `<option value="${escapeAttr(d)}"${d === s.dir ? " selected" : ""}>${escapeHtml(d)}</option>`).join("") +
+      `</select>` +
+      `<input class="ai-sug-name" data-i="${i}" value="${escapeAttr(s.suggest || s.name)}">` +
+      `</div>`;
+  }).join("");
+  dialog({
+    title: `🤖 AI 整理建议（${list.length} 项）`,
+    bodyHtml:
+      `<p class="muted">勾选要采纳的行，改完点「应用」。只移动/改名，不删任何东西。</p>` +
+      (r.warning ? `<p class="muted">⚠ ${escapeHtml(String(r.warning))}</p>` : "") +
+      `<div class="ai-sug-head"><span></span><span>文件</span><span>AI 的判断</span><span>移到</span><span>改成</span></div>` +
+      `<div class="ai-sug-list">${rows}</div>`,
+    okText: "应用所选",
+    onOk: async () => {
+      const picks = [...$("m-body").querySelectorAll(".ai-sug-check:checked")].map((x) => Number(x.value));
+      if (!picks.length) { toast("没勾选任何一行"); return false; }
+      let moved = 0, renamed = 0;
+      const errs = [];
+      for (const i of picks) {
+        const s = list[i];
+        const dirEl = $(`#m-body .ai-sug-dir[data-i="${i}"]`);
+        const nameEl = $(`#m-body .ai-sug-name[data-i="${i}"]`);
+        const dir = dirEl?.value || "保持原位";
+        const want = (nameEl?.value || "").trim();
+        // 先改名再移动：名字变了，移动用的路径也得跟着变
+        let curPath = s.path;
+        if (want && want !== s.name) {
+          const ext = (s.name.match(/\.([^.]+)$/) || [])[1];
+          const base = ext ? want.replace(new RegExp("\\." + ext + "$", "i"), "") : want;
+          const rr = await API.post("/assets/rename", { rel: curPath, name: base });
+          if (rr.ok) { renamed++; curPath = rr.to; }
+          else errs.push(`${s.name}：${rr.error}`);
+        }
+        if (dir !== "保持原位") {
+          const cur = curPath.split("/").slice(0, -1).join("/");
+          if (dir !== cur) {
+            const rr = await API.post("/assets/move", { paths: [curPath], dest: `_assets/${dir}` });
+            if (rr.ok && rr.moved) moved++;
+            else errs.push(`${s.name}：${rr.error || (rr.failed && rr.failed[0] && rr.failed[0].error) || "移动失败"}`);
+          }
+        }
+      }
+      await loadFiles();
+      await refreshAssetIndex();
+      const parts = [`✓ 已移动 ${moved} 项`, `改名 ${renamed} 项`];
+      if (errs.length) parts.push(`${errs.length} 项失败`);
+      toast(parts.join("，"), 4500);
+      if (errs.length) console.warn("[nian-vault] AI 整理应用失败", errs);
+    },
+  });
 }
 
 // 上传：弹一个子目录选择，然后走隐藏的 file input
@@ -1976,66 +2303,85 @@ $("btn-files").addEventListener("click", () => openFiles(""));
 $("btn-files-back").addEventListener("click", () => { showWall(false); showHome(); });
 $("btn-files-up").addEventListener("click", uploadAssetFlow);
 $("btn-files-mkdir").addEventListener("click", mkAssetDirFlow);
+$("btn-files-ref").addEventListener("click", collectExistingFlow);
+$("btn-files-ai").addEventListener("click", openAiOrganizeFiles);
+$("btn-files-list").addEventListener("click", () => setFilesMode("list"));
+$("btn-files-grid").addEventListener("click", () => setFilesMode("grid"));
+// 批量栏
+$("files-batch-all").addEventListener("change", (ev) => {
+  filesPicked = ev.target.checked ? new Set(filesItems.map((f) => f.path)) : new Set();
+  renderFiles();
+});
+$("btn-batch-clear").addEventListener("click", () => { filesPicked = new Set(); renderFiles(); });
+$("btn-batch-move").addEventListener("click", () => {
+  if (!filesPicked.size) return toast("先勾选文件");
+  moveAssetsFlow([...filesPicked], filesDir || "_assets");
+});
+$("btn-batch-del").addEventListener("click", () => {
+  if (!filesPicked.size) return toast("先勾选文件");
+  deleteAssetsFlow([...filesPicked]);
+});
+$("btn-batch-insert").addEventListener("click", () => {
+  if (!filesPicked.size) return toast("先勾选文件");
+  insertAssetsToNote([...filesPicked]);
+});
+// Esc 取消多选
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && filesPicked.size) { filesPicked = new Set(); renderFiles(); }
+});
 
 // ---- ![[资源名]] 卡片渲染钩子（markdown.js 会调它）------------------
 // 查前端缓存的 _assets 清单，按类型产出卡片。查不到返回 null，
 // markdown.js 会显示"文件不存在"的占位——不假装有。
+// MD 里 ![[名]] 的卡片。类型标注要一眼看得出：色带 + 类型徽章 + 大小。
+// 图片直接内嵌；视频/音频给播放条；其他给"打开"入口。
 window.__refCard = (name, alias) => {
   const key = String(name || "").replace(/^\.\//, "");
-  const f = (window.__assets || {})[key] || (window.__assets || {})[key.split("/").pop()];
+  const pool = window.__assets || {};
+  const f = pool[key] || pool[key.split("/").pop()];
   const label = alias || key;
   if (!f) return null;
   const url = `../routes/_assets/${f.path.replace(/^_assets\//, "")}`;
+  const tint = f.isDir ? "dir" : String(f.type || "file");
+  const badge = f.isDir ? "文件夹" : (TYPE_LABEL[f.type] || "文件");
+  const meta = f.isDir ? `${f.count} 项` : fmtSize(f.size);
+
   if (f.isDir) {
-    return `<span class="ref-card ref-card-dir" data-ref-card="${escapeAttr(f.path)}">` +
+    return `<span class="ref-card ref-card-dir" data-tint="${tint}" data-ref-card="${escapeAttr(f.path)}">` +
       `<span class="rc-ic">${icon("folder", 18)}</span>` +
       `<span class="rc-b"><span class="rc-t">${escapeHtml(label)}</span>` +
-      `<span class="rc-m">文件夹 · ${f.count} 项</span></span>` +
+      `<span class="rc-m"><b class="rc-badge">${badge}</b> ${escapeHtml(meta)}</span></span>` +
       `<span class="rc-x">打开 ›</span></span>`;
   }
+
   if (f.type === "image") {
-    return `<span class="ref-card ref-card-img" data-ref-card="${escapeAttr(f.path)}">` +
+    return `<span class="ref-card ref-card-img" data-tint="${tint}" data-ref-card="${escapeAttr(f.path)}">` +
       `<img class="rc-img" src="${escapeAttr(url)}" alt="${escapeAttr(label)}" loading="lazy">` +
-      `<span class="rc-cap">${escapeHtml(label)}</span></span>`;
+      `<span class="rc-cap"><b class="rc-badge">图片</b> ${escapeHtml(label)} · ${escapeHtml(fmtSize(f.size))}</span></span>`;
   }
-  return `<span class="ref-card" data-ref-card="${escapeAttr(f.path)}">` +
+
+  // 视频/音频：给原生播放器，不用另外打开
+  if (f.type === "video") {
+    return `<span class="ref-card ref-card-media" data-tint="${tint}" data-ref-card="${escapeAttr(f.path)}">` +
+      `<video class="rc-video" src="${escapeAttr(url)}" controls preload="metadata"></video>` +
+      `<span class="rc-b"><span class="rc-t">${escapeHtml(label)}</span>` +
+      `<span class="rc-m"><b class="rc-badge">视频</b> ${escapeHtml(fmtSize(f.size))}</span></span></span>`;
+  }
+  if (f.type === "audio") {
+    return `<span class="ref-card ref-card-media" data-tint="${tint}" data-ref-card="${escapeAttr(f.path)}">` +
+      `<span class="rc-ic">${icon("note", 18)}</span>` +
+      `<span class="rc-b"><span class="rc-t">${escapeHtml(label)}</span>` +
+      `<span class="rc-m"><b class="rc-badge">音频</b> ${escapeHtml(fmtSize(f.size))}</span>` +
+      `<audio class="rc-audio" src="${escapeAttr(url)}" controls preload="none"></audio></span></span>`;
+  }
+
+  // 其他文件：图标 + 类型徽章 + 大小 + 打开入口
+  return `<span class="ref-card" data-tint="${tint}" data-ref-card="${escapeAttr(f.path)}">` +
     `<span class="rc-ic">${icon(TYPE_ICONS[f.type] || "file", 18)}</span>` +
     `<span class="rc-b"><span class="rc-t">${escapeHtml(label)}</span>` +
-    `<span class="rc-m">${escapeHtml(TYPE_LABEL[f.type] || "文件")} · ${fmtSize(f.size)}</span></span>` +
+    `<span class="rc-m"><b class="rc-badge">${escapeHtml(badge)}</b> ${escapeHtml(meta)}</span></span>` +
     `<span class="rc-x">打开 ›</span></span>`;
 };
-
-// 拉一份 _assets 全量清单（扁平化，含子目录），供 refCard 查。
-// 深度限 3 层，防用户建深层目录把树拉爆。
-async function refreshAssetIndex() {
-  const idx = {};
-  const walk = async (rel, depth) => {
-    if (depth > 3) return;
-    const r = await API.get(`/assets/list?rel=${encodeURIComponent(rel)}`);
-    if (!r.ok) return;
-    for (const f of r.items || []) {
-      idx[f.name] = f;
-      idx[f.path] = f;
-      if (f.isDir) await walk(f.path, depth + 1);
-    }
-  };
-  await walk("", 0);
-  window.__assets = idx;
-  return idx;
-}
-
-// 卡片点击：跳到文件管理器并选中
-function bindRefCards(root) {
-  for (const c of (root || document).querySelectorAll("[data-ref-card]")) {
-    if (c.__bound) continue;
-    c.__bound = true;
-    c.addEventListener("click", () => {
-      const fp = c.dataset.refCard;
-      const dir = fp.split("/").slice(0, -1).join("/");
-      openFiles(dir).then(() => selectFile(fp));
-    });
-  }
-}
 
 // ============ 文件管理器 END ============
 
@@ -2860,3 +3206,35 @@ hana.ready().then(() => {
   loadStatus().catch(() => {});
   loadCategories().catch(() => {});
 }).catch(() => {});
+
+// 拉一份 _assets 全量清单（扁平化，含子目录），供 refCard 查。
+// 深度限 3 层，防用户建深层目录把树拉爆。
+async function refreshAssetIndex() {
+  const idx = {};
+  const walk = async (rel, depth) => {
+    if (depth > 3) return;
+    const r = await API.get(`/assets/list?rel=${encodeURIComponent(rel)}`);
+    if (!r.ok) return;
+    for (const f of r.items || []) {
+      idx[f.name] = f;
+      idx[f.path] = f;
+      if (f.isDir) await walk(f.path, depth + 1);
+    }
+  };
+  await walk("", 0);
+  window.__assets = idx;
+  return idx;
+}
+
+// 卡片点击：跳到文件管理器并选中
+function bindRefCards(root) {
+  for (const c of (root || document).querySelectorAll("[data-ref-card]")) {
+    if (c.__bound) continue;
+    c.__bound = true;
+    c.addEventListener("click", () => {
+      const fp = c.dataset.refCard;
+      const dir = fp.split("/").slice(0, -1).join("/");
+      openFiles(dir).then(() => selectFile(fp));
+    });
+  }
+}

@@ -24,6 +24,7 @@
             <button id="mi-storage">📂 存储位置</button>
             <button id="mi-backup">💾 备份与恢复</button>
             <button id="mi-settings">⚙ AI 设置</button>
+            <button id="mi-rules">📏 库规则</button>
           </div>
         </div>
       </div>
@@ -124,11 +125,27 @@
           <span class="muted" id="files-sub"></span>
         </div>
         <span class="grow"></span>
+        <button class="small" id="btn-files-ref" title="引用本机已有的文件夹或文件：不复制，只记位置">🔗 引用已有</button>
         <button class="small" id="btn-files-up" title="上传文件到当前文件夹">⬆ 上传</button>
         <button class="small" id="btn-files-mkdir" title="新建子文件夹">＋ 文件夹</button>
+        <button class="small" id="btn-files-ai" title="让 AI 看看这些文件该放哪、叫什么（只给建议，不动文件）">🤖 AI 整理</button>
+        <span class="files-view-switch">
+          <button class="small" id="btn-files-list" title="列表视图">☰</button>
+          <button class="small" id="btn-files-grid" title="图标视图">▦</button>
+        </span>
       </div>
       <!-- 面包屑：_assets / 图片 / 2026 -->
       <nav class="files-crumbs" id="files-crumbs"></nav>
+      <!-- 批量操作栏：多选后才出现 -->
+      <div class="files-batch" id="files-batch" hidden>
+        <label class="files-batch-all"><input type="checkbox" id="files-batch-all"> 全选</label>
+        <span class="files-batch-n" id="files-batch-n">已选 0 项</span>
+        <span class="grow"></span>
+        <button class="small" id="btn-batch-move" title="把选中的文件移到某个文件夹">📂 移动到…</button>
+        <button class="small" id="btn-batch-insert" title="把选中的文件一次性插入某篇笔记">📎 插入到笔记…</button>
+        <button class="small danger" id="btn-batch-del" title="删除选中的文件">🗑 删除</button>
+        <button class="small" id="btn-batch-clear">取消</button>
+      </div>
       <div class="files-list" id="files-list"></div>
       <!-- 库外引用：D:\xxx 那种，文件管理器也要能看见 -->
       <details class="files-ext" id="files-ext">

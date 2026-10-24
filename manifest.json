@@ -2,7 +2,7 @@
   "manifestVersion": 2,
   "id": "nian-vault",
   "name": "念念收藏夹",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "description": "个人数字资产仓库：收藏文字、网页、图片、文件引用与笔记，内置 OpenHanako 模型驱动的 AI 自动标签/摘要/问答与对话主动感知。",
   "entry": "index.js",
   "icon": "assets/icon.svg",
