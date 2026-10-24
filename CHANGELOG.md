@@ -1,5 +1,72 @@
 # 念念收藏夹 - 更新日志
 
+## [0.13.0] - 2026-10-24
+
+### 一、图片全裂的真根因：403 missing_credential
+
+这次没有靠推测，直接对正在跑的服务发了请求：
+
+    GET http://127.0.0.1:43563/api/apps/nian-vault/routes/_assets/…
+    → 403 {"error":"forbidden","reason":"missing_credential"}
+
+**宿主的 App 路由全都要求凭据**（surface session 头）。
+`hana.api.fetch` 会自动附上，但 **`<img src="…">` 发请求带不了自定义头**。
+所以只要图片用 URL 直连，就必然 403 → 全裂。
+
+前几轮我一直在改 assetUrl 的拼法，全都没用——不是路径错，是根本没有鉴权通道。
+
+**正解：blob URL。** 用 `hana.api.fetch` 取回二进制（它附凭据），
+转成 `blob:` 地址交给 `<img>`。新增：
+
+- `assetBlobUrl(rel)` —— 带内存缓存，同一文件不重复请求
+- `paintAssetImages(root)` —— 扫 `data-asset` 的图，逐个填 blob src
+- 取不到时标 `asset-failed` 并在 alt 里写明「读取失败」，不留裂图
+
+改成 data-asset 的位置：markdown 渲染、`__refCard` 图片块、`__refBlock` 图片块、
+文件管理器缩略图、预览弹窗、Vditor 编辑器内部。
+
+### 二、预览空白：三个独立原因
+
+1. **后端 MIME 只认图片**：PDF/视频/音频/文本一律回 `application/octet-stream`，
+   iframe 不渲染、`<video>` 不播 → 弹窗能弹出来但里面是空的。
+   现在补了完整 MIME 表（40+ 扩展名）+ `Content-Disposition: inline`。
+2. **前端把 PDF 归成 `file`**：预览走了「这种文件没法直接看」的降级分支。
+   `EXT_TYPE` 里 pdf 现在是独立类型，`TYPE_LABEL`/`TYPE_ICONS` 同步。
+3. **文本预览用裸 `fetch`**：沙箱里可能不存在，直接 `ReferenceError`。
+   改走 `hana.api.fetch`。
+
+验证方式：在真实 DOM 里逐个类型调 `previewAsset`，检查弹窗里有没有真内容——
+图片有 `<img>`、视频有 `<video>`、音频有 `<audio>`、PDF 有 `<iframe>`、文本有内容。
+
+### 三、单击就预览，不用双击
+
+原来只有双击才预览，单击只是选中，用户会以为功能坏了。
+现在单击文件直接开预览、单击文件夹直接进入；多选模式下不触发。
+用 180ms 延时避开双击的第二下，不会连弹两次。
+
+### 四、正文被污染的存量数据可以修
+
+老版本把 `http://127.0.0.1:端口/api/apps/nian-vault/routes/_assets/xxx`
+这种宿主绝对地址**存进了正文**。端口一变就全废。
+
+现在：
+- 编辑器不再往正文写绝对地址（改用 blob 显示，正文保持相对路径）
+- 新增 `POST /assets/clean-urls`：把这类地址还原成 `_assets/相对路径`，
+  并且做 URL 解码（`%E6%B5%8B` → 中文），否则对不上磁盘文件名
+- 「存储 → 🔧 修复图片链接」按钮：先 dryRun 告诉你改几篇、涉及哪些，确认后再动手
+
+你库里实测有 2 篇需要修。
+
+### 五、测试
+
+新增 `blob-image-check`（7 项，模拟 403 环境验证 blob 机制、缓存、失败降级）
+新增 `preview-real-check`（16 项，六种类型在真实 DOM 里的内容验证）
+
+18 个测试文件 **896 项** + 28 项视觉体检，全绿。
+
+### 还没做
+
+引用文件夹改成文件管理器的快捷方式（能在应用内浏览库外目录）——下一轮。
 ## [0.12.2] - 2026-10-24
 
 ### 一、预览和「打开文件位置」——SDK 里本来就有，我一直没用

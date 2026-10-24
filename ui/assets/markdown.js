@@ -114,7 +114,14 @@ function inline(src) {
   // 关键是绝对：写 "../routes/_assets/x" 这种相对路径，浏览器会按面板自己的
   // base URL 去解析，解析不到 → 图片必裂。所以这里调宿主注入的 resolveAsset()。
   // （上一轮只改了 panel.js 的 assetUrl，漏了这个文件，导致正文图片一直裂。）
-  s = s.replace(/((?:src|href)=")((?:\.\/)?_assets\/[^"\s]+)/g, (_, attr, p) => {
+  // _assets/ 的图片不能直接写 src：宿主路由要凭据，<img> 带不了，
+  // 必然 403 变裂图。改成标一个 data-asset，由宿主用 blob URL 填。
+  // 非图片（href 链接、视频/音频 src）保留原样，它们走别的加载路径。
+  s = s.replace(/(src=")((?:\.\.?\/)?_assets\/[^"\s]+)(?=")/g, (_, attr, p) => {
+    const clean = p.replace(/^(?:\.\.\/)+/, "").replace(/^\.\//, "");
+    return `${attr.replace("src=", "data-asset=")}${clean}" data-eager-src="1`;
+  });
+  s = s.replace(/(href=")((?:\.\/)?_assets\/[^"\s]+)/g, (_, attr, p) => {
     const clean = p.replace(/^\.\//, "");
     const abs = typeof resolveAsset === "function" ? resolveAsset(clean) : clean;
     return `${attr}${abs}`;

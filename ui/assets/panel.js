@@ -17,6 +17,56 @@ function assetUrl(rel) {
   catch { return `/_assets/${clean}`; }
 }
 
+// ---- 资源图片显示：blob URL（这是图片能显示的唯一正确方式）----
+// 宿主给 App 的所有路由都要求凭据（surface session 头），
+// 而 <img src="绝对地址"> 发请求带不了自定义头，所以必然 403 → 图片全裂。
+// 正解：用 hana.api.fetch 取回二进制（它自动附凭据），转成 blob: URL 交给 <img>。
+const _assetBlobCache = new Map();   // rel -> blobUrl
+const _assetBlobPending = new Map(); // rel -> Promise
+
+async function assetBlobUrl(rel) {
+  const key = String(rel || "").replace(/^_assets\//, "");
+  if (!key) return "";
+  if (_assetBlobCache.has(key)) return _assetBlobCache.get(key);
+  if (_assetBlobPending.has(key)) return _assetBlobPending.get(key);
+
+  const task = (async () => {
+    try {
+      const res = await hana.api.fetch(`/_assets/${key}`);
+      if (!res || !res.ok) throw new Error(`HTTP ${res ? res.status : "无响应"}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      _assetBlobCache.set(key, url);
+      return url;
+    } catch (err) {
+      console.warn("[nian-vault] 读取资源失败：", key, err?.message || err);
+      return "";
+    } finally {
+      _assetBlobPending.delete(key);
+    }
+  })();
+  _assetBlobPending.set(key, task);
+  return task;
+}
+
+// 扫一遍容器里所有 data-asset 的 <img>，把 blob URL 填进去。
+// 之所以不直接在 innerHTML 里写 src：blob 是异步拿的，没法同步生成。
+async function paintAssetImages(root) {
+  const box = root || document;
+  const imgs = [...box.querySelectorAll("img[data-asset]:not([data-asset-done])")];
+  await Promise.all(imgs.map(async (img) => {
+    img.dataset.assetDone = "1";
+    const rel = img.dataset.asset;
+    const url = await assetBlobUrl(rel);
+    if (url) img.src = url;
+    else {
+      // 取不到就说明白，不要留一个裂图
+      img.alt = (img.alt ? img.alt + " " : "") + "（读取失败）";
+      img.classList.add("asset-failed");
+    }
+  }));
+}
+
 // 把 assetUrl 交给 markdown.js：这样笔记正文里的 ![](路径) 也能拿到绝对 URL。
 // 不注册的话 markdown.js 只能退化用原路径，图片还是裂的。
 setResolveAsset(assetUrl);
@@ -36,15 +86,15 @@ let state = {
   root: "",
 };
 
-const TYPE_ICONS = { note: "note", text: "text", link: "link", image: "image", video: "video", audio: "note", file: "file", folder: "folder", memory: "memory", experience: "experience" };
+const TYPE_ICONS = { note: "note", text: "text", link: "link", image: "image", video: "video", audio: "note", pdf: "file", file: "file", folder: "folder", memory: "memory", experience: "experience" };
 // 图标库没有 audio，用 note 顶着；显示时另外给文字区分
-const TYPE_LABEL = { note: "笔记", text: "文本", link: "网页", image: "图片", video: "视频", audio: "音频", file: "文件", folder: "文件夹", memory: "记忆", experience: "经验" };
+const TYPE_LABEL = { note: "笔记", text: "文本", link: "网页", image: "图片", video: "视频", audio: "音频", pdf: "PDF", file: "文件", folder: "文件夹", memory: "记忆", experience: "经验" };
 // 与 lib/vault.js 的 EXT_TYPE 保持一致：收录时靠它判定类型
 const EXT_TYPE = {
   png: "image", jpg: "image", jpeg: "image", gif: "image", webp: "image", bmp: "image", svg: "image", ico: "image",
   mp4: "video", mkv: "video", mov: "video", avi: "video", webm: "video", flv: "video", wmv: "video", m4v: "video",
   mp3: "audio", wav: "audio", ogg: "audio", flac: "audio", m4a: "audio", aac: "audio", wma: "audio",
-  pdf: "file", doc: "file", docx: "file", xls: "file", xlsx: "file", ppt: "file", pptx: "file",
+  pdf: "pdf", doc: "file", docx: "file", xls: "file", xlsx: "file", ppt: "file", pptx: "file",
   txt: "text", md: "text", csv: "text", json: "text",
   zip: "file", rar: "file", "7z": "file", tar: "file", gz: "file",
   exe: "file", msi: "file", apk: "file", dmg: "file",
@@ -571,6 +621,7 @@ async function selectEntry(id) {
   }
   renderRefView(e);
   $("v-body").innerHTML = renderMarkdown(e.content);
+  paintAssetImages($("v-body"));
   bindRefCards($("v-body"));
   show($("detail-hint"), false);
   // ★ Bug #1 修复：必须在 v-body.innerHTML 渲染完成后再绑定任务复选框点击事件
@@ -665,14 +716,26 @@ const Editor = {
         const fixImgs = (root) => {
           if (!root || !root.querySelectorAll) return;
           for (const img of root.querySelectorAll("img")) {
+            // 已经处理过的不重复处理（blob URL 打上标记，避免死循环）
+            if (img.dataset.blobFilled === "1") continue;
             const src = img.getAttribute("src") || "";
-            // 只动库内相对路径；http/data/绝对路径不碰
-            if (/^(https?:|data:|\/)/i.test(src)) continue;
-            const clean = src.replace(/^\.\//, "").replace(/^_assets\//, "");
-            const abs = assetUrl(clean);
-            if (clean && img.getAttribute("src") !== abs) {
-              img.setAttribute("src", abs);
-            }
+            // 外链和 data: 不碰
+            if (/^(https?:|data:)/i.test(src)) continue;
+            // 已经是 blob 了也不用管
+            if (src.startsWith("blob:")) continue;
+            // 库内路径（相对或已被改成 /routes/ 绝对地址）统一还原成 rel
+            let rel = src;
+            const m = rel.match(/\/_assets\/([^"'\s]+)$/);
+            if (m) rel = "_assets/" + decodeURIComponent(m[1]);
+            rel = rel.replace(/^(?:\.\.\/)+/, "").replace(/^\.\//, "");
+            if (!rel || !/^_assets\//.test(rel)) continue;
+            const key = rel.replace(/^_assets\//, "");
+            img.dataset.blobFilled = "1";
+            // 用 blob URL 显示：正文里存的仍是相对路径，不被污染
+            assetBlobUrl(key).then((url) => {
+              if (url) img.setAttribute("src", url);
+              else img.classList.add("asset-failed");
+            });
           }
         };
         const mount = $("vditor-mount");
@@ -1306,6 +1369,9 @@ function openStorageDialog() {
       `<p class="muted" style="margin-top:0">整个库就是一个文件夹，每个分类一个子文件夹，想手动备份直接拷这个文件夹也行。</p>` +
       `<input id="d-path" placeholder="绝对路径，例如 D:\\我的收藏" value="">` +
       `<div class="row" style="margin-bottom:6px"><button type="button" id="d-pick">浏览文件夹…</button><span class="grow"></span></div>` +
+      `<div class="row" style="margin-bottom:8px">` +
+        `<button type="button" id="d-fix-img" title="把正文里误存的宿主绝对地址还原成库内相对路径">🔧 修复图片链接</button>` +
+        `<span class="grow"></span></div>` +
       `<label><input type="radio" name="d-mode" value="copy" checked> 把现有内容复制过去</label>` +
       `<label><input type="radio" name="d-mode" value="switch"> 只换位置，不复制（空库开始）</label>`,
     okText: "应用",
@@ -1320,6 +1386,24 @@ function openStorageDialog() {
         } catch (err) {
           toast(`打开选择器失败：${err?.message || err}`, 4000);
         }
+      });
+      // 老版本 bug 把 http://127.0.0.1:端口/.../_assets/x 存进了正文，
+      // 端口一变就全废。这里给一个可点的修复入口。
+      $("d-fix-img").addEventListener("click", async () => {
+        const dry = await API.post("/assets/clean-urls", { dryRun: true });
+        if (!dry.ok) return toast(`❌ ${dry.error}`, 5000);
+        if (!dry.changed) return toast("✓ 正文里没有需要修的图片链接");
+        const ok2 = await confirmBox(
+          `发现 ${dry.changed} 篇笔记里存了宿主绝对地址`,
+          `这些地址（http://127.0.0.1:端口/...）一旦端口变化就失效。` +
+          `会把它们还原成库内相对路径（_assets/...）。\n\n` +
+          `涉及：${(dry.titles || []).slice(0, 5).join("、")}${dry.changed > 5 ? " 等" : ""}`
+        );
+        if (!ok2) return;
+        const r = await API.post("/assets/clean-urls", {});
+        if (!r.ok) return toast(`❌ ${r.error}`, 5000);
+        toast(`✓ 已修复 ${r.changed} 篇的图片链接`, 4000);
+        if (state.selected) selectEntry(state.selected).catch(() => {});
       });
     },
     onOk: async () => {
@@ -2151,7 +2235,7 @@ function renderFiles() {
     const picked = filesPicked.has(f.path);
     const tint = f.isDir ? "dir" : String(f.type || "file");
     const thumb = !f.isDir && f.type === "image"
-      ? `<img class="fg-thumb" src="${assetUrl(f.path)}" loading="lazy" alt="">`
+      ? `<img class="fg-thumb" data-asset="${escapeAttr(f.path)}" loading="lazy" alt="">`
       : `<span class="fg-ic">${f.isDir ? icon("folder", 26) : icon(TYPE_ICONS[f.type] || "file", 26)}</span>`;
     const showCb = filesPickMode || picked;
     return `<div class="fgrid fgrid-${tint}${picked ? " picked" : ""}${showCb ? " cb-on" : ""}" data-fp="${escapeAttr(f.path)}" data-dir="${f.isDir ? "1" : "0"}" draggable="true">` +
@@ -2166,6 +2250,7 @@ function renderFiles() {
   box.className = filesMode === "grid" ? "files-list files-grid" : "files-list";
   const html = (f) => (filesMode === "grid" ? gridHtml(f) : rowHtml(f));
   box.innerHTML = filesItems.map(html).join("");
+  paintAssetImages(box);
 
   for (const row of box.querySelectorAll("[data-fp]")) {
     const fp = row.dataset.fp;
@@ -2177,14 +2262,23 @@ function renderFiles() {
         togglePick(fp, !filesPicked.has(fp));
       });
     }
+    let clickTimer = null;
     row.addEventListener("click", (ev) => {
-      //  Ctrl/Shift 点 = 多选；普通点 = 单选
+      // Ctrl/Shift 点 = 多选
       if (ev.ctrlKey || ev.metaKey || ev.shiftKey) { togglePick(fp, !filesPicked.has(fp)); return; }
       selectFile(fp);
+      // 单击直接出结果，不让用户猜"是不是要双击"：
+      // 文件夹 → 进去；文件 → 打开预览。
+      // 用 180ms 延时避开双击的第二下（双击不该连弹两次）。
+      if (filesPickMode) return;               // 多选模式下点=勾选，不打开
+      clearTimeout(clickTimer);
+      clickTimer = setTimeout(() => {
+        if (isDir) loadFilesTo(fp);
+        else previewAsset(fp, filesItems.find((x) => x.path === fp));
+      }, 180);
     });
     row.addEventListener("dblclick", () => {
-      if (isDir) loadFilesTo(fp);
-      else previewAsset(fp, filesItems.find((x) => x.path === fp));
+      clearTimeout(clickTimer);                // 双击不重复弹
     });
     row.addEventListener("contextmenu", (ev) => {
       ev.preventDefault();
@@ -2654,7 +2748,7 @@ async function previewAsset(fp, meta) {
 
   let body = "";
   if (type === "image") {
-    body = `<div class="fp-img-wrap"><img class="fp-img" src="${escapeAttr(url)}" alt="${escapeAttr(name)}"></div>`;
+    body = `<div class="fp-img-wrap"><img class="fp-img" data-asset="${escapeAttr(fp)}" alt="${escapeAttr(name)}"></div>`;
   } else if (type === "video") {
     body = `<video class="fp-video" src="${escapeAttr(url)}" controls preload="metadata"></video>`;
   } else if (type === "audio") {
@@ -2692,11 +2786,18 @@ async function previewAsset(fp, meta) {
   document.getElementById('preview-close').addEventListener('click', closePreview);
   ov.addEventListener('click', (ev) => { if (ev.target === ov) closePreview(); });
   document.addEventListener('keydown', onEsc);
+  paintAssetImages(ov);
   {
       const box = $("pv-text");
       if (box) {
-        // 拉文本：失败就显示错误，不假装空文件
-        fetch(url).then((r) => {
+        // 拉文本：走 hana.api.fetch 而不是裸 fetch。
+        // 裸 fetch 在沙箱里可能不存在，而且拿不到宿主鉴权；之前就是它导致
+        // 文本预览直接抛 ReferenceError，弹窗里一片空白。
+        Promise.resolve().then(() => {
+          if (hana?.api?.fetch) return hana.api.fetch(url);
+          if (typeof fetch === "function") return fetch(url);
+          throw new Error("当前环境没有可用的 fetch");
+        }).then((r) => {
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
           return r.text();
         }).then((txt) => {
@@ -3083,7 +3184,7 @@ window.__refBlock = (path, alt) => {
 
   if (f.type === "image") {
     return `<figure class="blk blk-img" data-ref-card="${escapeAttr(f.path)}">` +
-      `<img src="${escapeAttr(url)}" alt="${escapeAttr(label)}" loading="lazy">` +
+      `<img data-asset="${escapeAttr(f.path)}" alt="${escapeAttr(label)}" loading="lazy">` +
       `<figcaption>${escapeHtml(label)} · ${escapeHtml(size)}</figcaption></figure>`;
   }
   if (f.type === "video") {
@@ -3125,8 +3226,9 @@ window.__refCard = (name, alias) => {
   }
 
   if (f.type === "image") {
+    // 用 data-asset 而不是 src：宿主要求凭据，img 直连会 403。
     return `<span class="ref-card ref-card-img" data-tint="${tint}" data-ref-card="${escapeAttr(f.path)}">` +
-      `<img class="rc-img" src="${escapeAttr(url)}" alt="${escapeAttr(label)}" loading="lazy">` +
+      `<img class="rc-img" data-asset="${escapeAttr(f.path)}" alt="${escapeAttr(label)}" loading="lazy">` +
       `<span class="rc-cap"><b class="rc-badge">图片</b> ${escapeHtml(label)} · ${escapeHtml(fmtSize(f.size))}</span></span>`;
   }
 
@@ -4084,9 +4186,11 @@ function bindRefCards(root) {
     }
     c.addEventListener("click", () => {
       const fp = c.dataset.refCard;
-      const isImg = c.classList.contains("blk-img") || c.querySelector("img");
-      if (isImg) return lightbox(assetUrl(fp), fp.split("/").pop());
-      // 图片以外的都进预览弹窗（PDF 内嵌、文本显示内容、其余给打开入口）
+      // 只有"真的是图片块"才走灯箱。
+      // 不能用「里面有 img 标签」来判断——PDF/视频块里也可能有占位图，
+      // 那样会被误判成图片、永远进不了预览。
+      const isImgBlock = c.classList.contains("blk-img") || c.classList.contains("ref-card-img");
+      if (isImgBlock) return lightbox(assetUrl(fp), fp.split("/").pop());
       return previewAsset(fp);
     });
   }
