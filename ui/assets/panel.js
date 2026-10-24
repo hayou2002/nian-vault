@@ -22,7 +22,18 @@ let state = {
   root: "",
 };
 
-const TYPE_ICONS = { note: "note", text: "text", link: "link", image: "image", video: "video", file: "file", folder: "folder", memory: "memory", experience: "experience" };
+const TYPE_ICONS = { note: "note", text: "text", link: "link", image: "image", video: "video", audio: "audio", file: "file", folder: "folder", memory: "memory", experience: "experience" };
+// 与 lib/vault.js 的 EXT_TYPE 保持一致：收录时靠它判定类型
+const EXT_TYPE = {
+  png: "image", jpg: "image", jpeg: "image", gif: "image", webp: "image", bmp: "image", svg: "image", ico: "image",
+  mp4: "video", mkv: "video", mov: "video", avi: "video", webm: "video", flv: "video", wmv: "video", m4v: "video",
+  mp3: "audio", wav: "audio", ogg: "audio", flac: "audio", m4a: "audio", aac: "audio", wma: "audio",
+  pdf: "file", doc: "file", docx: "file", xls: "file", xlsx: "file", ppt: "file", pptx: "file",
+  txt: "text", md: "text", csv: "text", json: "text",
+  zip: "file", rar: "file", "7z": "file", tar: "file", gz: "file",
+  exe: "file", msi: "file", apk: "file", dmg: "file",
+};
+const typeOfExt = (ext) => EXT_TYPE[String(ext || "").toLowerCase().replace(/^\./, "")] || "file";
 const typeIcon = (t) => icon(TYPE_ICONS[t] || "note", 14);
 
 const show = (el, v) => { if (el) el.hidden = !v; };
@@ -1475,6 +1486,106 @@ $("btn-inbox-clear").addEventListener("click", inboxClear);
 $("btn-wall-inbox-ai").addEventListener("click", inboxAI);
 $("btn-wall-inbox-clear").addEventListener("click", inboxClear);
 
+// ============ 资源类收藏：收录 / 显示 / 打开 ============
+// 资源不复制进库，只存 meta.ref 指向原件。
+// 三类入口：拖拽到面板、对话框选路径、粘贴网址。
+
+// 把拖进来的 File 收录成一条收藏。
+// 注意：浏览器给的 File 拿不到真实磁盘路径，所以这里存的是「文件名 + 大小 + mime」，
+// 用户之后要用系统应用打开时，走的是 hana.resources.pick 重新定位——
+// 这是 Web 环境的硬限制，不是我们偷懒。
+async function collectDroppedFile(file) {
+  const ext = (file.name.match(/\.(\w{1,8})$/) || [])[1] || "";
+  const type = typeOfExt(ext);
+  const r = await API.post("/ref/collect", {
+    target: file.name,
+    type,
+    title: file.name,
+    category: state.filter.category || "",
+    content: "",
+  });
+  if (!r.ok) { toast(`❌ ${file.name}：${r.error}`); return null; }
+  // 补上浏览器能拿到的元信息
+  await API.post("/entry", {
+    id: r.entry.id,
+    ref: { kind: "path", target: file.name, size: file.size, mime: file.type || null },
+  });
+  return r.entry;
+}
+
+// 用宿主的选择器选文件/文件夹，收录进去
+async function pickAndCollect() {
+  let picked = null;
+  try {
+    picked = await hana.resources.pick({ multiple: false });
+  } catch (err) {
+    toast(`❌ 无法打开选择器：${err?.message || err}`, 4500);
+    return;
+  }
+  const res = picked?.resources?.[0];
+  if (!res?.path) return toast("没有选中文件");
+  const r = await API.post("/ref/collect", {
+    target: res.path,
+    category: state.filter.category || "",
+  });
+  if (!r.ok) return toast(`❌ ${r.error}`);
+  toast(`✓ 已收藏 ${r.entry.title}`);
+  await loadCategories();
+  await loadEntries();
+  await refreshTree();
+  renderCategories();
+}
+
+// 粘贴网址收录
+async function collectUrlFlow() {
+  const url = await promptText("收藏网页", "", "https://…");
+  if (!url) return;
+  const r = await API.post("/ref/collect-url", { url, category: state.filter.category || "" });
+  if (!r.ok) return toast(`❌ ${r.error}`);
+  toast(`✓ 已收藏 ${r.entry.title}`);
+  await loadCategories();
+  await loadEntries();
+  renderCategories();
+}
+
+// 打开原件：本地文件走宿主 external.open，网址走浏览器
+async function openRef(id) {
+  const r = await API.post("/ref/open", { id });
+  if (!r.ok) return toast(`❌ ${r.error}`, 5000);
+  try {
+    if (r.url) await hana.ui.external.open({ url: r.url });
+    else await hana.ui.external.open({ path: r.path });
+  } catch (err) {
+    toast(`❌ 打不开：${err?.message || err}`, 5000);
+  }
+}
+
+// 卡片上的资源角标：按类型给一行小字，说明这是什么、多大、在哪儿
+function refBadge(e) {
+  const ref = e.ref;
+  if (!ref) return "";
+  if (ref.kind === "url") return ref.host || "";
+  if (ref.missing) return "原件已失效";
+  const bits = [];
+  if (e.type === "folder" && ref.children) {
+    bits.push(`${ref.children.count} 项`);
+    if (ref.children.size) bits.push(fmtSize(ref.children.size));
+  } else if (ref.size != null) {
+    bits.push(fmtSize(ref.size));
+  }
+  return bits.join(" · ");
+}
+
+function fmtSize(n) {
+  const b = Number(n) || 0;
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)} KB`;
+  if (b < 1024 * 1024 * 1024) return `${(b / 1024 / 1024).toFixed(1)} MB`;
+  return `${(b / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+// ============ 资源类收藏 END ============
+
 // 4. 快速切换器与 AI 知识库问答（Ctrl+K / Ctrl+O）
 async function openQuickSwitcher(initialAskMode = false) {
   const r = await API.get("/entries?limit=300");
@@ -1760,7 +1871,7 @@ function renderWall() {
       <span class="wcard-body">
         <span class="wcard-title">${escapeHtml(e.title)}</span>
         <span class="wcard-snippet">${escapeHtml(e.snippet || e.content || "").slice(0, 90)}</span>
-        <span class="wcard-meta">${wallKind === "tag" ? escapeHtml(e.category) : (e.tags || []).map((t) => `#${escapeHtml(t)}`).join(" ") || escapeHtml(e.category)}${e.parentTitle ? ` ↳ ${escapeHtml(e.parentTitle)}` : ""}</span>
+        <span class="wcard-meta">${wallKind === "tag" ? escapeHtml(e.category) : (e.tags || []).map((t) => `#${escapeHtml(t)}`).join(" ") || escapeHtml(e.category)}${e.parentTitle ? ` ↳ ${escapeHtml(e.parentTitle)}` : ""}${refBadge(e) ? ` · ${escapeHtml(refBadge(e))}` : ""}</span>
       </span>
       ${e.pinned ? '<span class="wcard-pin" title="已置顶">★</span>' : ""}
     </button>`;
