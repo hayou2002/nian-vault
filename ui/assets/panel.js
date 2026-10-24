@@ -7,6 +7,16 @@ const API = {
   post: (path, data) => hana.api.fetch(path, { method: "POST", body: JSON.stringify(data) }).then((r) => r.json()),
 };
 
+// 资源完整 URL。
+// 关键：不能写 "../routes/_assets/xxx" 这种相对路径——浏览器会按面板自己的
+// base URL 去解析，解析不到，图片就是裂的；external.open 也认不出相对路径。
+// hana.api.url() 是 SDK 给的 helper，会把 API 路径拼成绝对 URL，两边都能用。
+function assetUrl(rel) {
+  const clean = String(rel || "").replace(/^\.?\//, "").replace(/^_assets\//, "");
+  try { return hana.api.url(`/_assets/${clean}`); }
+  catch { return `/_assets/${clean}`; }
+}
+
 const $ = (id) => document.getElementById(id);
 const appRoot = $("app");
 
@@ -655,8 +665,9 @@ const Editor = {
             // 只动库内相对路径；http/data/绝对路径不碰
             if (/^(https?:|data:|\/)/i.test(src)) continue;
             const clean = src.replace(/^\.\//, "").replace(/^_assets\//, "");
-            if (clean && img.getAttribute("src") !== `../routes/_assets/${clean}`) {
-              img.setAttribute("src", `../routes/_assets/${clean}`);
+            const abs = assetUrl(clean);
+            if (clean && img.getAttribute("src") !== abs) {
+              img.setAttribute("src", abs);
             }
           }
         };
@@ -680,14 +691,54 @@ const Editor = {
 const Attach = {
   open: false,
   items: [],
-  // 面板开关
-  toggle(force) {
-    this.open = force === undefined ? !this.open : !!force;
-    const p = $("attach-panel");
+  // 开关：开成一个模态弹窗，不占编辑器布局。
+  // （原来是内联展开面板，内容一多就把编辑器顶下去了——用户反馈的问题。）
+  toggle() { this.openDialog(); },
+  async openDialog() {
+    dialog({
+      title: "📎 附件",
+      bodyHtml: `<div class="attach-dialog-host"></div>`,
+      okText: "关闭",
+      onOk: () => {},
+    });
+    this.open = true;
     const b = $("btn-attach");
-    if (p) p.hidden = !this.open;
-    if (b) b.setAttribute("aria-expanded", this.open ? "true" : "false");
-    if (this.open) this.refresh();
+    if (b) b.setAttribute("aria-expanded", "true");
+    // 先建容器，再拉数据：弹窗立刻出来，不等网络
+    const box = document.createElement("div");
+    box.id = "attach-panel";
+    box.innerHTML =
+      `<div class="attach-acts">
+         <button type="button" class="small primary" id="btn-attach-upload">⬆ 上传文件</button>
+         <input type="file" id="attach-file" multiple hidden>
+         <input type="text" id="attach-q" placeholder="筛选资源名…" class="attach-q">
+       </div>
+       <div class="attach-list" id="attach-list"><div class="muted attach-loading">正在读取库内资源…</div></div>
+       <div class="attach-foot">
+         <span class="muted" id="attach-stat"></span>
+         <button type="button" class="link-btn" id="btn-attach-refresh">↻ 刷新</button>
+       </div>`;
+    $("m-body").appendChild(box);
+    this.wire();
+    await this.refresh();
+    // 等用户关掉再收干净：不然下次打开会叠一个旧容器
+    const cleanup = () => { box.remove(); this.open = false; $("btn-attach")?.setAttribute("aria-expanded", "false"); };
+    $("m-cancel").addEventListener("click", cleanup, { once: true });
+    $("m-ok").addEventListener("click", cleanup, { once: true });
+  },
+  // 弹窗里的按钮/输入框接线（每次打开都要重接，因为容器是新的）
+  wire() {
+    $("btn-attach-upload")?.addEventListener("click", () => $("attach-file").click());
+    $("attach-file")?.addEventListener("change", async (ev) => {
+      await this.upload(ev.target.files);
+      ev.target.value = "";
+    });
+    $("btn-attach-refresh")?.addEventListener("click", () => this.refresh());
+    let t = null;
+    $("attach-q")?.addEventListener("input", () => {
+      clearTimeout(t);
+      t = setTimeout(() => this.render(), 120);
+    });
   },
   // 拉库内资源清单（复用 AI 那条索引，带缓存）
   async refresh() {
@@ -786,16 +837,8 @@ function guessTypeOf(name) {
   return "file";
 }
 
-// 接线
+// 只留触发按钮的接线；弹窗内部接线在 Attach.wire() 里做
 $("btn-attach").addEventListener("click", () => Attach.toggle());
-$("btn-attach-upload").addEventListener("click", () => $("attach-file").click());
-$("attach-file").addEventListener("change", (ev) => { Attach.upload(ev.target.files); ev.target.value = ""; });
-$("btn-attach-refresh").addEventListener("click", () => Attach.refresh());
-let _attachQT = null;
-$("attach-q").addEventListener("input", (ev) => {
-  clearTimeout(_attachQT);
-  _attachQT = setTimeout(() => Attach.render(), 120);
-});
 Editor.init();
 
 // ---------------- [[ 双链自动补全 ----------------
@@ -1753,14 +1796,93 @@ async function pickAndCollect() {
 
 // 粘贴网址收录
 async function collectUrlFlow() {
-  const url = await promptText("收藏网页", "", "https://…");
+  const url = (await promptText("收藏网页", "", "https://…"))?.trim();
   if (!url) return;
-  const r = await API.post("/ref/collect-url", { url, category: state.filter.category || "" });
-  if (!r.ok) return toast(`❌ ${r.error}`);
-  toast(`✓ 已收藏 ${r.entry.title}`);
+  if (!/^https?:\/\//i.test(url)) return toast("❌ 请输入以 http(s):// 开头的网址");
+
+  // 1) 先抓正文。抓不到不阻塞——退化成只存链接，但要说清楚。
+  toast("⏳ 正在抓取网页正文…", 2500);
+  let ex = null;
+  try {
+    const r = await API.post("/article/extract", { url });
+    if (r.ok) ex = r;
+    else toast(`⚠ 抓不到正文：${r.error}`, 6000);
+  } catch (err) { toast(`⚠ 抓取出错：${err?.message || err}`, 6000); }
+
+  // 2) 预览 + 可编辑标题/分类/标签。用户看过内容再决定存不存。
+  const catOpts = state.categories.map((x) =>
+    `<option value="${escapeAttr(x.name)}"${x.name === (state.filter.category || "收件箱") ? " selected" : ""}>${escapeHtml(x.name)}</option>`).join("");
+  const preview = ex
+    ? `<div class="clip-meta">` +
+      (ex.siteName ? `<span>来源：${escapeHtml(ex.siteName)}</span>` : "") +
+      (ex.author ? `<span>作者：${escapeHtml(ex.author)}</span>` : "") +
+      (ex.published ? `<span>发布：${escapeHtml(String(ex.published).slice(0, 10))}</span>` : "") +
+      `<span>正文 ${ex.chars} 字${ex.truncated ? "（已截断）" : ""}</span>` +
+      `</div>` +
+      (ex.thin ? `<p class="clip-warn">⚠ 提取到的正文很短，可能是登录墙或动态页面——可以先存链接，再手动补内容。</p>` : "") +
+      `<div class="clip-preview md">${renderMarkdown(ex.markdown.slice(0, 4000))}</div>` +
+      (ex.markdown.length > 4000 ? `<p class="muted">…预览只显示前 4000 字，入库会存全文。</p>` : "")
+    : `<p class="clip-warn">没能抓到正文，将只保存链接。你可以现在取消，换个时间再试。</p>`;
+
+  const dlg = await new Promise((resolve) => {
+    let settled = false;
+    const once = (v) => { if (!settled) { settled = true; resolve(v); } };
+    dialog({
+      title: "🔗 收藏网页",
+      bodyHtml:
+        `<div class="clip-url">${escapeHtml(url)}</div>` + preview +
+        `<div class="clip-fields">` +
+        `<input id="clip-title" class="m-input" value="${escapeAttr(ex?.title || new URL(url).hostname)}" placeholder="标题">` +
+        `<select id="clip-cat" class="m-input">${catOpts}</select>` +
+        `<input id="clip-tags" class="m-input" placeholder="标签，逗号分隔">` +
+        `</div>`,
+      okText: "存入库",
+      onOk: () => once({
+        title: $("clip-title").value.trim(),
+        category: $("clip-cat").value,
+        tags: $("clip-tags").value.split(/[,，]/).map((s) => s.trim()).filter(Boolean),
+      }),
+      onClose: () => once(null),
+    });
+  });
+  if (!dlg) return;
+
+  // 3) 入库。有正文就走 /entry 存完整内容；抓不到才退回只存链接。
+  if (ex) {
+    const r = await API.post("/entry", {
+      title: dlg.title || ex.title || url,
+      content: buildClipBody(url, ex, dlg.tags),
+      category: dlg.category || "收件箱",
+      tags: dlg.tags,
+      type: "link",
+      source: "网页",
+      extra: { ref: { kind: "url", target: url, host: new URL(url).hostname } },
+    });
+    if (!r.ok) return toast(`❌ ${r.error}`);
+    toast(`✓ 已收藏《${r.entry.title}》，正文 ${ex.chars} 字`);
+  } else {
+    const r = await API.post("/ref/collect-url", { url, category: dlg.category || "", title: dlg.title, tags: dlg.tags });
+    if (!r.ok) return toast(`❌ ${r.error}`);
+    toast(`✓ 已收藏链接 ${r.entry.title}`);
+  }
   await loadCategories();
   await loadEntries();
   renderCategories();
+}
+
+// 剪藏正文：用户备注 + 元信息 + 正文 + 原文链接。
+// 和 lib/article.js 的 buildClipContent 一个形态，那边是给 Node 侧用的。
+function buildClipBody(url, ex, tags) {
+  const L = [];
+  if (tags && tags.length) L.push(`标签：${tags.join(" / ")}`, "");
+  if (ex.description) L.push(`> ${ex.description}`, "");
+  const metas = [];
+  if (ex.siteName) metas.push(`**来源**：${ex.siteName}`);
+  if (ex.author) metas.push(`**作者**：${ex.author}`);
+  if (ex.published) metas.push(`**发布时间**：${String(ex.published).slice(0, 10)}`);
+  if (metas.length) L.push(metas.join(" · "), "");
+  L.push("---", "", ex.markdown || "（没能提取到正文，只存了链接）", "", "---", "", `原文链接：${url}`);
+  return L.join("\n");
 }
 
 // 打开原件：本地文件走宿主 external.open，网址走浏览器
@@ -1824,7 +1946,7 @@ function renderRefView(e) {
   } else if (e.type === "image") {
     // 库内上传的图片走 /asset 路由；本地引用的图片 iframe 读不到 file://，只能给按钮
     if (ref.target && ref.target.startsWith("_assets/")) {
-      body = `<img class="ref-img" src="../routes/${escapeAttr(ref.target)}" alt="${escapeAttr(e.title)}">`;
+      body = `<img class="ref-img" src="${assetUrl(ref.target)}" alt="${escapeAttr(e.title)}">`;
     } else {
       body = `<div class="ref-empty">${icon("image", 22)}<p>浏览器里读不到本地图片文件，点下面的按钮用系统应用打开。</p></div>`;
     }
@@ -1954,7 +2076,7 @@ function renderFiles() {
     const picked = filesPicked.has(f.path);
     const tint = f.isDir ? "dir" : String(f.type || "file");
     const thumb = !f.isDir && f.type === "image"
-      ? `<img class="fg-thumb" src="../routes/_assets/${escapeAttr(f.path.replace(/^_assets\//, ""))}" loading="lazy" alt="">`
+      ? `<img class="fg-thumb" src="${assetUrl(f.path)}" loading="lazy" alt="">`
       : `<span class="fg-ic">${f.isDir ? icon("folder", 26) : icon(TYPE_ICONS[f.type] || "file", 26)}</span>`;
     const showCb = filesPickMode || picked;
     return `<div class="fgrid fgrid-${tint}${picked ? " picked" : ""}${showCb ? " cb-on" : ""}" data-fp="${escapeAttr(f.path)}" data-dir="${f.isDir ? "1" : "0"}" draggable="true">` +
@@ -2144,40 +2266,123 @@ function setFilesMode(mode) {
 }
 
 // 引用本机已有的文件夹/文件：存引用不复制
-async function collectExistingFlow() {
-  // 让宿主弹选择器。mode 的合法值没有文档，所以渐进尝试：
-  // 1) 不传 mode（宿主默认，最可能支持）
-  // 2) 传 mode:"any"（明确要文件和文件夹都能选）
-  // 3) 传 mode:"file"
-  // 任何一步抛异常就退下一步；拿到结果就用。
-  const attempts = [{}, { mode: "any" }, { mode: "file" }, { mode: "files" }];
-  let picked = null;
-  let lastErr = null;
-  for (const arg of attempts) {
-    try {
-      const r = await hana.resources.pick(arg);
-      const first = r?.resources?.[0] || r?.[0] || null;
-      const t = first?.path || first?.uri;
-      if (t) { picked = r; break; }
-      // 没抛错但也没选到东西 = 用户取消了，别继续试
-      if (r) break;
-    } catch (err) {
-      lastErr = err;
-    }
-  }
-  if (!picked) {
-    if (lastErr) toast(`打开选择器失败：${lastErr?.message || lastErr}`, 4500);
-    return;
-  }
-  const first = picked?.resources?.[0] || picked?.[0] || null;
-  const raw = first?.path || first?.uri;
-  if (!raw) return toast("没有选中任何文件或文件夹");
-  // 可能是 file:// URI，也可能是裸路径；都统一成裸路径
-  let target = String(raw).replace(/^file:\/\//, "");
-  try { target = decodeURIComponent(target); } catch {}
-  if (!target) return toast("选中的路径为空");
+// 问用户要引文件还是引文件夹。
+// 为什么不直接让宿主选择器同时选两种：实测选目录时宿主会「进入下一级」，
+// 拿不到目录本身（用户反馈的原话）。所以分开问，目录走可控的路。
+function askRefKind() {
+  return new Promise((resolve) => {
+    let settled = false;
+    const once = (v) => { if (!settled) { settled = true; resolve(v); } };
+    dialog({
+      title: "🔗 引用已有",
+      bodyHtml:
+        `<div class="refkind">
+           <button type="button" class="refkind-btn" data-k="file">
+             <span class="rk-ic">${icon("file", 22)}</span>
+             <span class="rk-t">引用文件</span>
+             <span class="rk-d">用系统选择器挑一个文件</span>
+           </button>
+           <button type="button" class="refkind-btn" data-k="dir">
+             <span class="rk-ic">${icon("folder", 22)}</span>
+             <span class="rk-t">引用文件夹</span>
+             <span class="rk-d">粘贴目录路径（从资源管理器地址栏复制）</span>
+           </button>
+           <button type="button" class="refkind-btn" data-k="vault">
+             <span class="rk-ic">${icon("folder", 22)}</span>
+             <span class="rk-t">引用库内文件夹</span>
+             <span class="rk-d">从收藏夹自己的文件管理器里选</span>
+           </button>
+         </div>`,
+      okText: "取消",
+      onOk: () => once(null),
+      onClose: () => once(null),
+      onMount: () => {
+        for (const b of $("m-body").querySelectorAll(".refkind-btn")) {
+          b.addEventListener("click", () => { once(b.dataset.k); show($("modal"), false); });
+        }
+      },
+    });
+  });
+}
 
-  const isDir = /\.(\w{1,8})$/.test(target.split(/[\\/]/).pop() || "") ? false : true;
+// 从库内资源里挑一个文件夹引用。这条路完全可控——不依赖宿主选择器。
+async function pickVaultDir() {
+  let items = [];
+  try {
+    const r = await API.get("/assets/index");
+    items = r.ok ? (r.items || []).filter((x) => x.isDir) : [];
+  } catch { items = []; }
+  if (!items.length) {
+    toast("库里还没有文件夹，先去文件管理器建一个", 4500);
+    return null;
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const once = (v) => { if (!settled) { settled = true; resolve(v); } };
+    dialog({
+      title: "📂 选库内文件夹",
+      bodyHtml: `<div class="refpick-list">` + items.map((x) =>
+        `<button type="button" class="refpick" data-p="${escapeAttr(x.path)}">
+           <span class="rp-ic">${icon("folder", 16)}</span>
+           <span class="rp-n">${escapeHtml(x.name)}</span>
+           <span class="rp-c">${x.count} 项</span>
+         </button>`).join("") + `</div>`,
+      okText: "取消",
+      onOk: () => once(null),
+      onClose: () => once(null),
+      onMount: () => {
+        for (const b of $("m-body").querySelectorAll(".refpick")) {
+          b.addEventListener("click", () => {
+            // 库内文件夹要走库内绝对路径，后端 collectRef 认这个
+            once(b.dataset.p.replace(/^_assets\//, ""));
+            show($("modal"), false);
+          });
+        }
+      },
+    });
+  });
+}
+
+async function collectExistingFlow() {
+  const kind = await askRefKind();
+  if (!kind) return;
+
+  let target = "";
+  if (kind === "file") {
+    // 文件：走宿主选择器。mode 合法值无文档，只试两种最可能的，
+    // 且都不带 "file" 这类值——带上会让宿主进入纯文件模式，反而选不了目录。
+    let picked = null;
+    let lastErr = null;
+    for (const arg of [{}, { mode: "any" }]) {
+      try {
+        const r = await hana.resources.pick(arg);
+        const first = r?.resources?.[0] || r?.[0] || null;
+        const t = first?.path || first?.uri;
+        if (t) { picked = r; break; }
+        if (r) break; // 没抛错也没选到 = 用户取消
+      } catch (err) { lastErr = err; }
+    }
+    if (!picked) {
+      if (lastErr) toast(`打开选择器失败：${lastErr?.message || lastErr}`, 4500);
+      return;
+    }
+    const first = picked?.resources?.[0] || picked?.[0] || null;
+    const raw = first?.path || first?.uri;
+    if (!raw) return toast("没有选中文件");
+    // file:// URI 与裸路径都统一成裸路径
+    target = String(raw).replace(/^file:\/\//, "");
+    try { target = decodeURIComponent(target); } catch {}
+  } else if (kind === "dir") {
+    // 文件夹：宿主选择器选不了（会进入下一级），改成粘贴路径。
+    const v = await promptText("引用文件夹", "", "粘贴目录路径，如 D:\\资料\\教资真题");
+    if (!v) return;
+    target = String(v).trim().replace(/^file:\/\//, "").replace(/^["']|["']$/g, "");
+  } else {
+    target = await pickVaultDir();
+    if (!target) return;
+  }
+  if (!target) return toast("路径为空");
+
   const r = await API.post("/ref/collect", {
     target,
     // 类型让后端判：它会 stat 一次，文件夹不会因为没扩展名而被错判成 file
@@ -2269,7 +2474,7 @@ async function previewAsset(fp, meta) {
   const name = fp.split("/").pop();
   const type = meta?.type || guessTypeOf(name);
   const size = typeof meta?.size === "number" ? fmtSize(meta.size) : "";
-  const url = `../routes/_assets/${fp.replace(/^_assets\//, "")}`;
+  const url = assetUrl(fp);
   const head = `<div class="fp-head"><span class="fp-ic">${icon(TYPE_ICONS[type] || "file", 18)}</span>` +
     `<span class="fp-name" title="${escapeAttr(fp)}">${escapeHtml(name)}</span>` +
     `<span class="fp-meta">${escapeHtml(TYPE_LABEL[type] || "文件")}${size ? ` · ${size}` : ""}</span></div>`;
@@ -2324,7 +2529,7 @@ async function previewAsset(fp, meta) {
 
 async function openAssetFile(fp) {
   try {
-    await hana.ui.external.open({ url: `../routes/_assets/${fp.replace(/^_assets\//, "")}` });
+    await hana.ui.external.open({ url: assetUrl(fp) });
   } catch (err) {
     toast(`❌ 打不开：${err?.message || err}`, 5000);
   }
@@ -2614,7 +2819,7 @@ window.__refCard = (name, alias) => {
   const f = pool[key] || pool[key.split("/").pop()];
   const label = alias || key;
   if (!f) return null;
-  const url = `../routes/_assets/${f.path.replace(/^_assets\//, "")}`;
+  const url = assetUrl(f.path);
   const tint = f.isDir ? "dir" : String(f.type || "file");
   const badge = f.isDir ? "文件夹" : (TYPE_LABEL[f.type] || "文件");
   const meta = f.isDir ? `${f.count} 项` : fmtSize(f.size);
@@ -2952,7 +3157,7 @@ function renderWall() {
     const picked = wallPicked.has(e.id);
     // 库内上传的图片直接露封面；本地引用的图 iframe 读不到，只给角标
     const cover = (e.type === "image" && e.ref?.target?.startsWith("_assets/"))
-      ? `<img class="wcard-cover" src="../routes/${escapeAttr(e.ref.target)}" alt="" loading="lazy">`
+      ? `<img class="wcard-cover" src="${assetUrl(e.ref.target)}" alt="" loading="lazy">`
       : "";
     return `<button class="wcard${i === wallIndex ? " active" : ""}${picked ? " picked" : ""}${cover ? " has-cover" : ""}" data-i="${i}" data-id="${e.id}">
       <span class="wcard-check" data-check="1">${picked ? "✓" : ""}</span>
@@ -3254,6 +3459,26 @@ function renderHomeEntries(boxId, items, emptyText, extra) {
     </li>`).join("");
   for (const li of box.querySelectorAll(".hl")) {
     li.addEventListener("click", async () => { showListView(); await selectCategory(""); await selectEntry(li.dataset.id); });
+    // 右键菜单：和文件管理器、侧栏一套行为。
+    // 做法是复用顶栏 ⋯ 菜单已有的动作——先选中这条，再点对应的 mi-* 按钮，
+    // 不另写一套复制/固定/导出/删除（写了就会两边行为不一致）。
+    li.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      const e = items.find((x) => x.id === li.dataset.id);
+      if (!e) return;
+      const act = (btnId) => async () => {
+        await selectCategory("");
+        await selectEntry(e.id);
+        $(btnId)?.click();
+      };
+      treeMenu(ev, [
+        { label: "📖 打开", run: async () => { await selectCategory(""); await selectEntry(e.id); } },
+        { label: "📌 钉成卡片", run: act("mi-board") },
+        { label: "⧉ 复制全文", run: act("mi-copy") },
+        { label: "⬇ 导出为 .md", run: act("mi-export") },
+        { label: "🗑 删除", danger: true, run: act("mi-delete") },
+      ]);
+    });
   }
 }
 

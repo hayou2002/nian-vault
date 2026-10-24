@@ -199,35 +199,19 @@
         <button class="icon-btn toc-unfold" id="btn-toc-unfold" title="展开目录" hidden title="下一页">▸ 下一页</button>
       </div>
       <form id="edit" class="edit" hidden>
-        <input id="e-title" placeholder="标题（可留空，自动取第一行或点下方 AI 生成）">
-        <div class="row">
-          <select id="e-cat"></select>
-          <input id="e-tags" placeholder="标签，用逗号分隔">
+        <div class="edit-top">
+          <input id="e-title" placeholder="标题（可留空，自动取第一行或点下方 AI 生成）">
+          <select id="e-cat" class="e-cat"></select>
+          <input id="e-tags" class="e-tags" placeholder="标签，逗号分隔">
         </div>
         <div class="toolbar" hidden>
           <!-- 旧工具栏已由 Vditor 自带工具栏取代，保留容器避免旧引用报错 -->
         </div>
         <textarea id="e-body" hidden></textarea><!-- Vditor 不可用时（含测试环境）的降级载体 -->
-        <div class="edit-hint" id="edit-hint">
-          提示：输入 <code>[[</code> 补全双链；将左侧树节点拖入编辑器可插入双链；按 <code>Ctrl+S</code> 快速保存。
+        <div class="edit-hint" id="edit-hint" hidden>
+          <span>输入 <code>[[</code> 补全双链；拖左侧树节点进编辑器插双链；<code>Ctrl+S</code> 保存。</span>
         </div>
-        <!-- ④ 附件标签页：上传 / 引用库内已有资源 / 本篇已引用的 -->
-        <div class="attach-bar">
-          <button type="button" class="attach-tab" id="btn-attach" aria-expanded="false">📎 附件</button>
-          <span class="attach-hint">上传文件、或插入库内已有资源</span>
-        </div>
-        <div class="attach-panel" id="attach-panel" hidden>
-          <div class="attach-acts">
-            <button type="button" class="small primary" id="btn-attach-upload">⬆ 上传文件</button>
-            <input type="file" id="attach-file" multiple hidden>
-            <input type="text" id="attach-q" placeholder="筛选资源名…" class="attach-q">
-          </div>
-          <div class="attach-list" id="attach-list"></div>
-          <div class="attach-foot">
-            <span class="muted" id="attach-stat"></span>
-            <button type="button" class="link-btn" id="btn-attach-refresh">↻ 刷新</button>
-          </div>
-        </div>
+        <div class="attach-bar"><button type="button" class="attach-tab" id="btn-attach" aria-expanded="false" title="上传文件，或插入库内已有资源">📎 附件</button></div>
         <div id="vditor-mount"></div>
         <div class="actions">
           <button type="button" class="ai-pill" id="btn-ai-edit" title="根据正文自动推荐标题、分类、标签并生成摘要">✨ AI 智能填充</button>
