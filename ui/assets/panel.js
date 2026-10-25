@@ -2956,10 +2956,17 @@ async function loadPdf(scope, fp) {
   if (!wrap) return;
   try {
     if (!_pdfjsMod) {
+      // 先自己把 worker 模块 import 进来挂到 globalThis.pdfjsWorker：
+      // pdf.js 的 fake worker 分支见到现成的 WorkerMessageHandler 直接用，
+      // 不再按 workerSrc 相对解析（相对路径在 _surface/{token}/ 下必踩空）。
+      if (!globalThis.pdfjsWorker) {
+        globalThis.pdfjsWorker = await import("./vendor/pdf.worker.min.mjs");
+      }
       _pdfjsMod = await import("./vendor/pdf.min.mjs");
-      // 指向包内 worker 模块：pdf.js 禁 Worker 时用 await import(workerSrc)
-      // 把它拉进主线程跑。必须指向同源文件，不能是 CDN。
-      _pdfjsMod.GlobalWorkerOptions.workerSrc = "./vendor/pdf.worker.min.mjs";
+      // 兜底路径：万一某版本 fake worker 仍要读 workerSrc，给按本模块
+      // 位置算出的绝对 URL，不用相对路径。
+      _pdfjsMod.GlobalWorkerOptions.workerSrc =
+        new URL("./vendor/pdf.worker.min.mjs", import.meta.url).href;
     }
     const isAbs = /^([A-Za-z]:[\\/]|\/)/.test(String(fp));
     const url = isAbs
@@ -3150,11 +3157,13 @@ async function renderDocx(scope, fp) {
       }
       _docxMod = await import("./vendor/docx-preview.mjs");
     }
-    // 库内走 /asset/*（库内 fs）；库外走 /external/raw（宿主资源接口）
+    // 库内走 /asset/*（库内 fs）；库外走 /external/raw（宿主资源接口）。
+    // 注意 fetch 必须传相对路径：assetUrl() 返回绝对 URL，SDK 的
+    // normalizePluginApiPath 见到 http: 协议头直接抛 Invalid plugin API path。
     const isAbs = /^([A-Za-z]:[\\/]|\/)/.test(fp);
     const url = isAbs
       ? `/external/raw?path=${encodeURIComponent(fp)}`
-      : assetUrl(fp);
+      : `/_assets/${String(fp).replace(/^[._]*assets[/_]/, "")}`;
     const resp = await hana.api.fetch(url);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const blob = await resp.blob();

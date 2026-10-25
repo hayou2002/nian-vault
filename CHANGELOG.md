@@ -1,5 +1,58 @@
 # 念念收藏夹 - 更新日志
 
+## [0.17.4] - 2026-10-25
+
+### 两个真机错误的根因（都修了）
+
+0.17.3 装机后用户截图反馈两条错误，这次都挖到了根：
+
+#### ① docx：Invalid plugin API path
+
+renderDocx 把 `assetUrl(fp)` 的返回值喂给了 `hana.api.fetch()`。
+`assetUrl()` 返回**绝对 URL**（`http://127.0.0.1:...`），而 SDK 的
+`normalizePluginApiPath` 见到协议头（`/^[a-z][a-z0-9+.-]*:/i` 命中 `http:`）
+直接抛 `Invalid plugin API path`。
+
+分工从此写死：`assetUrl()` 只给 `<img>/<video>` 这类 HTML 标签用
+（标签带不了凭据头，必须绝对 URL）；`hana.api.fetch()` 只吃相对路由路径。
+库内 docx 改拼 `/_assets/...` 相对路径，与 loadPdf 一致。
+
+这也侧面说明 0.17.3 的 JSZip 顺序修复生效了——错误往后走了一层。
+
+#### ② PDF：fake worker 的相对路径踩空
+
+截图报 fake worker 动态 import 失败。根因：
+`workerSrc = "./vendor/..."` 按 **pdf.min.mjs 自己的位置**解析，
+它已经在 vendor/ 里，再拼一层变成 `vendor/vendor/…` → 404。
+而且面板页挂在 `_surface/{token}/` 下，相对路径解析天然不可靠。
+
+之前的 http 测试没挂 CSP 头，pdf.js 走的是真 Worker 分支，
+没暴露 fake worker 分支的问题。
+
+修法（pdf.js 官方支持的路径）：panel.js 先自己 `await import(worker 模块)`
+挂到 `globalThis.pdfjsWorker`——pdf.js 的 fake worker 分支见到现成的
+`WorkerMessageHandler` 直接用（sdk.js 源码同款判断），不再解析 workerSrc。
+workerSrc 仅留兜底，且用 `import.meta.url` 拼绝对 URL。
+
+### 验证（比上版更狠：CSP 头直接挂上）
+
+真实 Edge + 完整沙箱 CSP（`worker-src 'none'`）+ nonce 内联：
+
+```
+sample-text.pdf：pages=1, textLen=33, inkSamples=6973（canvas 真画出来了）
+调查问卷参考.pdf（459KB 扫描件）：pages=7, inkSamples=7212
+fake worker 主线程跑通，无 new Worker，CSP 合规
+```
+
+上版遗留的「bytes=0 但能解析」怪象定位为测试环境问题
+（virtual-time 冻结响应体但放行流），渲染出内容才是硬证据。
+
+### 测试
+
+- 新增 `fix-0174-check` 13 项
+- 历史断言随功能演进入档（0171/0172/0173 共 6 条）
+- 28 个测试文件 **923 项** + 28 项视觉 + 13 项 docx 布局，全绿
+
 ## [0.17.3] - 2026-10-25
 
 ### Word：JSZip 加载顺序写反了
