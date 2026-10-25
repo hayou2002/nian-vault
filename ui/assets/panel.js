@@ -144,13 +144,30 @@ async function paintMedia(root) {
     // video：scoped URL 直连，浏览器原生 Range 边播边拉（大文件不进内存）。
     // audio：小文件走 blob（一次性拉完，避免每次 seek 都打一次 206）。
     if (el.tagName.toLowerCase() === "video") {
-      el.src = mediaSrcUrl(rel);
-      el.addEventListener("error", () => {
+      // 直连优先（Range 流式）。失败时：
+      //   ≤64MB → 降级 blob（走已验证的 hana.api.fetch 通道，能兜住中小文件）
+      //   >64MB  → 不试 blob（整读会撑爆），把错误码亮出来 + 系统播放器入口
+      const src = mediaSrcUrl(rel);
+      const BIG = 64 * 1024 * 1024;
+      const size = Number(el.dataset.vsize || 0);
+      let stage = "direct";
+      el.addEventListener("error", async () => {
+        const code = el.error?.code ?? "?";
+        const kinds = { 1: "加载被中止", 2: "网络/取字节失败", 3: "解码失败", 4: "来源不支持" };
+        if (stage === "direct" && (!size || size <= BIG)) {
+          stage = "blob";
+          const blobUrl = await mediaBlobUrl(rel);
+          if (blobUrl) { el.src = blobUrl; el.load(); return; }
+        }
         const wrap = el.closest(".fp-audio, .preview-body");
         if (wrap) wrap.insertAdjacentHTML("beforeend",
-          `<div class="fp-err">❌ 视频加载失败（${escapeHtml(String(rel).split(/[\\/]/).pop())}）` +
-          `<br><span class="muted">可以右键「打开文件位置」用系统播放器看。</span></div>`);
-      }, { once: true });
+          `<div class="fp-err">❌ 视频加载失败（${escapeHtml(String(rel).split(/[\\\\]/).pop())}）` +
+          `<br><span class="muted">错误码 ${code}：${kinds[code] || "未知"}${size > BIG ? " · 文件较大未走 blob 兜底" : " · 直连与 blob 都试过"}</span>` +
+          `<br><span class="muted" style="word-break:break-all">请求：${escapeHtml(src.slice(0, 200))}</span>` +
+          `<br><span class="muted" style="word-break:break-all">页面：${escapeHtml(location.pathname.slice(0, 120))}</span>` +
+          `<br><span class="muted">可以用右键「打开文件位置」交给系统播放器。</span></div>`);
+      });
+      el.src = src;
       return;
     }
     const url = await mediaBlobUrl(rel);
@@ -3134,7 +3151,7 @@ async function previewAsset(fp, meta) {
   } else if (type === "video") {
     // 音视频和图片同理：标签带不了凭据头，绝对 URL 直连必 403。
     // 用 data-vsrc 标记，预览框挂载后异步填 blob URL（见 paintMedia）。
-    body = `<video class="fp-video" data-vsrc="${escapeAttr(fp)}" controls preload="metadata"></video>`;
+    body = `<video class="fp-video" data-vsrc="${escapeAttr(fp)}" data-vsize="${escapeAttr(String(meta?.size ?? ""))}" controls preload="metadata"></video>`;
   } else if (type === "audio") {
     body = `<div class="fp-audio"><div class="fp-audio-ic">${icon("audio", 40)}</div>` +
       `<audio data-vsrc="${escapeAttr(fp)}" controls preload="metadata"></audio></div>`;
