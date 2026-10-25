@@ -1,5 +1,90 @@
 # 念念收藏夹 - 更新日志
 
+## [0.19.3] - 2026-10-25
+
+### 根因：响应体作为单个超大 chunk 撞上 32MiB 硬限制
+
+在宿主 bundle 里找到了这条硬限制：
+
+```js
+class Wv { static MAX_MESSAGE_BYTES = 32 * 1024 * 1024; }   // 32 MiB
+
+read(e) {
+  ...
+  if (n.byteLength > Wv.MAX_MESSAGE_BYTES)
+    throw new Error("App HTTP source chunk exceeds 32 MiB",
+                    { code: "APP_HTTP_CHUNK_TOO_LARGE" });
+}
+```
+
+而 `new Response(整个 175MB Buffer)` 会产生什么？实测：
+
+```
+Response(175MB Buffer).body.getReader()
+→ 第一块就是 183500800 字节（整个文件）
+```
+
+Buffer 给 Response 会变成一个**超大单块**，直接撞上限。宿主抛
+`APP_HTTP_CHUNK_TOO_LARGE`，上层 SDK 包装这个错误时表现成
+`Invalid array length`——所以前面怎么找都找不到 `new Array` 在哪。
+
+### 修法：返回真正的分块流
+
+```js
+const CHUNK_SIZE = 8 * 1024 * 1024;
+const toChunkedStream = (buf) => {
+  let offset = 0;
+  return new ReadableStream({
+    pull(controller) {
+      if (offset >= buf.length) { controller.close(); return; }
+      const end = Math.min(offset + CHUNK_SIZE, buf.length);
+      controller.enqueue(new Uint8Array(buf.subarray(offset, end)));
+      offset = end;
+    },
+  });
+};
+const rawBody = (buf, status, headers) =>
+  new Response(buf.length > CHUNK_SIZE ? toChunkedStream(buf) : buf, { status, headers });
+```
+
+### 为什么是 8MB（不是 1MB）
+
+先实测了各种块大小的代价：
+
+```
+CHUNK  |  块数  | 宿主 RPC 次数 | Range 4MB 要不要切
+  1MB  |  176   |     2801     |  要切 4 块 ← 白做功夫
+  4MB  |   44   |     2801     |  不用切
+  8MB  |   22   |     2801     |  不用切
+ 32MB  |    6   |     2801     |  不用切（但零余量，风险高）
+```
+
+关键发现：**宿主实际传输粒度是 64KiB（`Cz = 64*1024`），跟我的块大小无关**，
+RPC 次数恒为 2801。所以 `CHUNK_SIZE` 只决定三件事：
+
+1. `ReadableStream` 的 pull 次数（176 → 22，实测 65ms → 42ms）
+2. 宿主内部块登记/回收开销
+3. 宿主内存里同时驻留的整块大小（并发多视频时 ×N）
+
+选 8MB 的理由：离 32MiB 留 4 倍余量；Range 单段上限是 4MB，整块直给不用再切；
+175MB 只有 22 块。
+
+### 验证
+
+```
+整文件 175MB  → 22 块，每块 8.00MB，字节完整 ✓
+Range 4MB     → 1 块直给，状态 206 ✓
+Range 32MB    → 4 块，每块 8MB ✓
+```
+
+`chunk-stream-direct` 8 项、`chunk-limit-check` 7 项、`range-fallback-check` 11 项、
+`media-playback-check` 17 项全绿。
+
+### 保留的诊断能力
+
+`/external/raw` 全链路 trace（`[raw]` 前缀）和 `wrap()` 的错误 dump 都留着——
+下次若还有问题，日志里直接能看到走到了哪个分支、读到多少字节。
+
 ## [0.19.2] - 2026-10-25
 
 ### 失败面终于会说人话了
