@@ -20,7 +20,7 @@
 ```
 nian-vault/
 ├── manifest.json        # Hana v2 App 清单（capabilities: tools.expose-to-model + resources.read/write）
-├── index.js             # App 入口：注册 UI 路由 + 8 个 AI 工具
+├── index.js             # App 入口：注册 UI 路由 + 11 个 AI 工具
 ├── lib/
 │   ├── frontmatter.js   # 条目 .md 的 front matter 序列化/解析（每行 key: <JSON 值>，同时是合法 YAML）
 │   ├── storage.js       # 双后端：NodeFs（dataDir 内）/ ResourceFs（盘外自定义位置，走 sdk.resources）
@@ -76,7 +76,9 @@ front matter 字段（`lib/frontmatter.js` 的 FM_KEYS）：
 - **右栏**：详情（封面卡 + B站内嵌播放、反向链接面板、正文内待办可点）/ 编辑（Vditor 所见即所得；输入 `[[` 弹自动补全；拖图片进编辑器自动上传）
 - **双链**：`[[标题]]` / `[[标题|别名]]` 语法，渲染成可点击链接，代码块内不算数
 
-## AI 工具（8 个，注册名会带哈希后缀）
+<img src="docs/ai-flow.svg" alt="AI 整理流程：单条收藏四步走完，收件箱可批量归位" width="100%">
+
+## AI 工具（11 个，注册名会带哈希后缀）
 
 | 工具 | 用途 |
 |---|---|

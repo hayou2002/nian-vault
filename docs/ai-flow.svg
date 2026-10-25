@@ -1,0 +1,177 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1220 528" width="1220" height="528" role="img" aria-label="念念收藏夹的 AI 整理流程：用户说一句话，Agent 抓取、分析、归档；或让 AI 把整个收件箱批量归位">
+  <defs>
+    <linearGradient id="bg3" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fdfaf6"/>
+      <stop offset="1" stop-color="#f6ede2"/>
+    </linearGradient>
+    <linearGradient id="tile3" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a332c"/>
+      <stop offset="1" stop-color="#1e1a16"/>
+    </linearGradient>
+    <filter id="soft3" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="6" flood-color="#5a4632" flood-opacity="0.09"/>
+    </filter>
+    <marker id="arr3" markerWidth="8" markerHeight="8" refX="6.5" refY="2.5" orient="auto">
+      <path d="M0,0 L6.5,2.5 L0,5 Z" fill="#c2703d"/>
+    </marker>
+  </defs>
+
+  <rect width="1220" height="528" fill="url(#bg3)"/>
+
+  <!-- 标题 -->
+  <g transform="translate(48 28)">
+    <rect x="0" y="0" width="34" height="34" rx="10" fill="url(#tile3)"/>
+    <text x="17" y="24" text-anchor="middle" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="17" fill="#fdfaf6">✦</text>
+    <text x="48" y="16" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="17" font-weight="600" fill="#2f2a24">AI 是整理员，不是生成器</text>
+    <text x="48" y="34" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="11.5" fill="#8d8274">它只做三件事：提炼你给的内容、决定归到哪、打上标签。原文要点一律保留，不擅自删你的话</text>
+  </g>
+
+  <!-- ============ 路线 A：单条收藏 ============ -->
+  <g transform="translate(48 88)">
+    <text x="0" y="12" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="12.5" font-weight="600" fill="#a95c2f">路线 A · 单条收藏</text>
+    <text x="112" y="12" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="11" fill="#8d8274">你说一句，三步就走完</text>
+
+    <!-- 步骤 1：用户 -->
+    <g transform="translate(0 28)">
+      <rect x="0" y="0" width="196" height="104" rx="14" fill="#ffffff" stroke="#e8dccc" filter="url(#soft3)"/>
+      <circle cx="24" cy="24" r="11" fill="#fbf1e6"/>
+      <text x="24" y="28" text-anchor="middle" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" font-weight="700" fill="#a95c2f">1</text>
+      <text x="44" y="28" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="12.5" font-weight="600" fill="#2f2a24">你说话</text>
+      <line x1="14" y1="42" x2="182" y2="42" stroke="#f2e8dc" stroke-width="1.2"/>
+      <text x="14" y="62" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#5d5348">「收藏这个，记到备课」</text>
+      <text x="14" y="78" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#8d8274">或点消息底部按钮 / 划词右键</text>
+      <rect x="14" y="86" width="168" height="10" rx="3" fill="#faf6ef"/>
+    </g>
+    <path d="M200 80 h26" stroke="#c2703d" stroke-width="1.8" marker-end="url(#arr3)"/>
+
+    <!-- 步骤 2：Agent 抓取 -->
+    <g transform="translate(232 28)">
+      <rect x="0" y="0" width="230" height="104" rx="14" fill="#ffffff" stroke="#e8dccc" filter="url(#soft3)"/>
+      <circle cx="24" cy="24" r="11" fill="#fbf1e6"/>
+      <text x="24" y="28" text-anchor="middle" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" font-weight="700" fill="#a95c2f">2</text>
+      <text x="44" y="28" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="12.5" font-weight="600" fill="#2f2a24">Agent 抓内容</text>
+      <line x1="14" y1="42" x2="216" y2="42" stroke="#f2e8dc" stroke-width="1.2"/>
+      <text x="14" y="62" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#5d5348">网页：web_fetch 取标题与正文</text>
+      <text x="14" y="78" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#8d8274">视频：顺带存封面与播放器地址</text>
+      <text x="14" y="94" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#8d8274">本地文件：只记路径，不搬原件</text>
+    </g>
+    <path d="M466 80 h26" stroke="#c2703d" stroke-width="1.8" marker-end="url(#arr3)"/>
+
+    <!-- 步骤 3：AI 分析 -->
+    <g transform="translate(498 28)">
+      <rect x="0" y="0" width="238" height="104" rx="14" fill="#fdf7f1" stroke="#e8c9a4" stroke-width="1.4" filter="url(#soft3)"/>
+      <circle cx="24" cy="24" r="11" fill="#f5e3d0"/>
+      <text x="24" y="28" text-anchor="middle" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" font-weight="700" fill="#a95c2f">3</text>
+      <text x="44" y="28" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="12.5" font-weight="600" fill="#2f2a24">模型提炼元信息</text>
+      <line x1="14" y1="42" x2="224" y2="42" stroke="#eeddc9" stroke-width="1.2"/>
+      <text x="14" y="61" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#5d5348">输出 JSON：title / category /</text>
+      <text x="14" y="76" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#5d5348">tags / summary / related / todo</text>
+      <text x="14" y="94" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#a9702f">模型不可用时走本地启发式兜底</text>
+    </g>
+    <path d="M740 80 h26" stroke="#c2703d" stroke-width="1.8" marker-end="url(#arr3)"/>
+
+    <!-- 步骤 4：入库 -->
+    <g transform="translate(772 28)">
+      <rect x="0" y="0" width="196" height="104" rx="14" fill="#ffffff" stroke="#e8dccc" filter="url(#soft3)"/>
+      <circle cx="24" cy="24" r="11" fill="#fbf1e6"/>
+      <text x="24" y="28" text-anchor="middle" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" font-weight="700" fill="#a95c2f">4</text>
+      <text x="44" y="28" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="12.5" font-weight="600" fill="#2f2a24">落成一个 .md</text>
+      <line x1="14" y1="42" x2="182" y2="42" stroke="#f2e8dc" stroke-width="1.2"/>
+      <text x="14" y="62" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#5d5348">front matter 存元信息</text>
+      <text x="14" y="78" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#8d8274">正文就是 Markdown</text>
+      <text x="14" y="94" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#8d8274">没有合适的分类就进收件箱</text>
+    </g>
+    <path d="M972 80 h26" stroke="#c2703d" stroke-width="1.8" marker-end="url(#arr3)"/>
+
+    <!-- 结果 -->
+    <g transform="translate(1004 28)">
+      <rect x="0" y="0" width="120" height="104" rx="14" fill="#2f2a24" filter="url(#soft3)"/>
+      <text x="60" y="34" text-anchor="middle" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="11" fill="#c9bda9">可读 · 可搜</text>
+      <text x="60" y="56" text-anchor="middle" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="13" font-weight="600" fill="#fdfaf6">卡片墙</text>
+      <text x="60" y="76" text-anchor="middle" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="11" fill="#c9bda9">能备份</text>
+      <text x="60" y="94" text-anchor="middle" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10" fill="#8d8274">纯文本</text>
+    </g>
+  </g>
+
+  <!-- ============ 路线 B：批量归位 ============ -->
+  <g transform="translate(48 240)">
+    <line x1="0" y1="0" x2="1124" y2="0" stroke="#eadfce" stroke-width="1"/>
+    <text x="0" y="24" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="12.5" font-weight="600" fill="#a95c2f">路线 B · 收件箱批量归位</text>
+    <text x="176" y="24" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="11" fill="#8d8274">攒了一堆没空分类的，一句话让 AI 一起看</text>
+
+    <!-- 收件箱 -->
+    <g transform="translate(0 40)">
+      <rect x="0" y="0" width="252" height="124" rx="14" fill="#ffffff" stroke="#e8dccc" filter="url(#soft3)"/>
+      <text x="16" y="24" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="12" font-weight="600" fill="#2f2a24">收件箱</text>
+      <text x="236" y="24" text-anchor="end" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#8d8274">12 条待整理</text>
+      <line x1="16" y1="34" x2="236" y2="34" stroke="#f2e8dc" stroke-width="1.2"/>
+      <!-- 条目行 -->
+      <g>
+        <rect x="16" y="44" width="10" height="10" rx="2.5" fill="#e8dccc"/>
+        <rect x="32" y="46" width="118" height="6" rx="3" fill="#ddd0bb"/>
+        <rect x="16" y="64" width="10" height="10" rx="2.5" fill="#e8dccc"/>
+        <rect x="32" y="66" width="94" height="6" rx="3" fill="#ddd0bb"/>
+        <rect x="16" y="84" width="10" height="10" rx="2.5" fill="#e8dccc"/>
+        <rect x="32" y="86" width="132" height="6" rx="3" fill="#ddd0bb"/>
+        <rect x="16" y="104" width="10" height="10" rx="2.5" fill="#e8dccc"/>
+        <rect x="32" y="106" width="76" height="6" rx="3" fill="#ddd0bb"/>
+        <text x="160" y="112" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10" fill="#c4b6a0">…还有 8 条</text>
+      </g>
+    </g>
+    <path d="M256 102 h28" stroke="#c2703d" stroke-width="1.8" marker-end="url(#arr3)"/>
+
+    <!-- 先看再决定 -->
+    <g transform="translate(288 40)">
+      <rect x="0" y="0" width="252" height="124" rx="14" fill="#fdf7f1" stroke="#e8c9a4" stroke-width="1.4" filter="url(#soft3)"/>
+      <text x="16" y="24" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="12" font-weight="600" fill="#2f2a24">AI 先看一遍</text>
+      <line x1="16" y1="34" x2="236" y2="34" stroke="#eeddc9" stroke-width="1.2"/>
+      <text x="16" y="54" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#5d5348">list_inbox 读完全部条目摘要</text>
+      <text x="16" y="74" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#5d5348">对着现有分类逐个判断去向</text>
+      <text x="16" y="94" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#8d8274">优先用已有分类，不自造</text>
+      <text x="16" y="112" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#a9702f">每条给出：目标分类 + 标签 + 理由</text>
+    </g>
+    <path d="M544 102 h28" stroke="#c2703d" stroke-width="1.8" marker-end="url(#arr3)"/>
+
+    <!-- 批量移动 -->
+    <g transform="translate(576 40)">
+      <rect x="0" y="0" width="252" height="124" rx="14" fill="#ffffff" stroke="#e8dccc" filter="url(#soft3)"/>
+      <text x="16" y="24" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="12" font-weight="600" fill="#2f2a24">一次批量搬走</text>
+      <line x1="16" y1="34" x2="236" y2="34" stroke="#f2e8dc" stroke-width="1.2"/>
+      <text x="16" y="54" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#5d5348">batch_move 按建议一起移动</text>
+      <text x="16" y="74" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#8d8274">顺带把标签打上</text>
+      <text x="16" y="94" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#8d8274">收件箱清空，分类各归各位</text>
+      <rect x="16" y="102" width="220" height="16" rx="5" fill="#faf6ef"/>
+      <text x="24" y="113" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="9.5" fill="#8a7a66">不满意可以逐条改，AI 的建议不是最终判决</text>
+    </g>
+    <path d="M832 102 h28" stroke="#c2703d" stroke-width="1.8" marker-end="url(#arr3)"/>
+
+    <!-- 结果 -->
+    <g transform="translate(864 40)">
+      <rect x="0" y="0" width="260" height="124" rx="14" fill="#ffffff" stroke="#e8dccc" filter="url(#soft3)"/>
+      <text x="16" y="24" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="12" font-weight="600" fill="#2f2a24">整理完的样子</text>
+      <line x1="16" y1="34" x2="244" y2="34" stroke="#f2e8dc" stroke-width="1.2"/>
+      <!-- 分类列 -->
+      <g transform="translate(16 46)">
+        <rect x="0" y="0" width="68" height="18" rx="5" fill="#fbf1e6"/>
+        <text x="8" y="13" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="9.5" fill="#a95c2f">备课资料 4</text>
+        <rect x="0" y="24" width="68" height="18" rx="5" fill="#fbf1e6"/>
+        <text x="8" y="37" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="9.5" fill="#a95c2f">教学法 3</text>
+        <rect x="0" y="48" width="68" height="18" rx="5" fill="#fbf1e6"/>
+        <text x="8" y="61" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="9.5" fill="#a95c2f">真题 3</text>
+        <rect x="0" y="72" width="68" height="18" rx="5" fill="#efe8da"/>
+        <text x="8" y="85" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="9.5" fill="#8d8274">收件箱 0</text>
+      </g>
+      <text x="100" y="60" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#5d5348">每条都带标签</text>
+      <text x="100" y="78" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#8d8274">随时可再调</text>
+      <text x="100" y="96" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#8d8274">全文仍可搜</text>
+    </g>
+  </g>
+
+  <!-- ============ 底部：工具 & 兜底 ============ -->
+  <g transform="translate(48 438)">
+    <line x1="0" y1="0" x2="1124" y2="0" stroke="#eadfce" stroke-width="1"/>
+    <text x="0" y="24" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="11.5" fill="#8d8274">对外暴露 11 个工具：save / save_file / search / get / update / categories / list_inbox / batch_move / quick_clip / pick_from_chat / open_panel</text>
+    <text x="0" y="44" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="11.5" fill="#a9702f">全部本地执行：模型只负责给建议，写盘、改名、移动都由 App 自己按规则做，模型说错也不会写坏库</text>
+    <text x="0" y="64" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="11.5" fill="#8d8274">模型不可用时自动降级：用关键词与标题相似度给出兜底建议，功能不断档</text>
+  </g>
+</svg>
