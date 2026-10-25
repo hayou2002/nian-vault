@@ -1,5 +1,50 @@
 # 念念收藏夹 - 更新日志
 
+## [0.18.0] - 2026-10-25
+
+### PDF 压扁修复
+
+真机反馈：PDF 能看了，但被压成一页、比例不对。根因是 flex 容器的默认行为：
+`.fp-pdf-canvas` 用 `display:flex` 居中，flex 默认 `align-items:stretch` 会把
+子项垂直拉伸到容器高度，canvas 就被压扁了。一行 `align-items:flex-start` 修掉。
+
+### 音视频：从「直连 URL」改成 blob
+
+`<video src=绝对URL>` 和当年 `<img>` 踩的是同一个坑：标签发请求带不了
+surface session 凭据头 → 403。图片 0.16 就改成 blob 了，音视频一直没跟上。
+现在 `data-vsrc` 标记 + `paintMedia()` 异步填 blob，与图片同款机制，带缓存。
+
+### Excel / PPT 预览（后端解析路线）
+
+CSP 禁 Worker/eval/blob，前端库全被卡死——但**后端是 Node，没这些限制**。
+解析放后端，前端零依赖只管画：
+
+- Excel（xls/xlsx/xlsm/xlsb）：SheetJS（xlsx.full.min.js 861KB，仅后端加载）
+  解析成 `{sheets:[{name,rows}]}`，前端画表格；多 sheet 出标签页切换；
+  限 20 sheet / 200 行 / 40 列（面板不是 Excel，够看就行）。
+- PPT（pptx/ppsx）：本质是 zip，每页 slideN.xml 的 `<a:t>` 是文本。
+  后端抽每页文字大纲，前端排成「第 N 页」卡片流。纯图片页抽不到字，
+  诚实提示「没抽到文字」，不硬演。老 .ppt 是二进制 OLE 格式，读不了会报错降级。
+
+踩坑记录：vendor 的 jszip 在 Node 下 `exports` 本身就是 JSZip 类，
+`new JSZipCtor().loadAsync(buf)` 才是正确用法（`JSZip.loadAsync()` 无参调用
+会报「Can't read the data of the loaded zip file」）。
+
+### 扩展名表补齐（+30）
+
+jpe/jfif/tiff/avif/heic、3gp/mpg/rmvb、oga/midi/opus/aiff、markdown/log、
+bz2/xz/iso 等之前全落到「文件」类型，现在正确归类。
+
+### 验证
+
+- xlsx：SheetJS 写真实文件再解析，中英文/数字单元格全对
+- pptx：造真 zip（含 rels 干扰项）再解，页序/段落拼接/实体转义全对
+- PDF 比例：jsdom computed style 钉死 align-items/height/max-width
+- 新增 sheet-slide-check 10 项 + pdf-aspect-check 8 项
+- 29 个测试文件 **951 项** + 28 项视觉 + 13 项 docx 布局，全绿
+
+安装包 2.03MB → 约 2.9MB（xlsx 库 861KB 进了 vendor，仅后端用）。
+
 ## [0.17.4] - 2026-10-25
 
 ### 两个真机错误的根因（都修了）

@@ -87,6 +87,26 @@ async function assetBlobUrl(rel) {
   return task;
 }
 
+// video / audio 的 blob 填充：和图片同款机制（data-vsrc → assetBlobUrl）。
+// 音视频文件大，交给浏览器自己的 blob URL 播放器，面板只管取字节。
+async function paintMedia(root) {
+  const box = root || document;
+  const els = [...box.querySelectorAll("video[data-vsrc], audio[data-vsrc]")];
+  await Promise.all(els.map(async (el) => {
+    const rel = el.dataset.vsrc;
+    el.removeAttribute("data-vsrc");
+    const url = await assetBlobUrl(rel);
+    if (url) el.src = url;
+    else {
+      // 取不到字节：给个明确的失败面，不留一个黑块
+      const wrap = el.closest(".fp-audio, .preview-body");
+      if (wrap) wrap.insertAdjacentHTML("beforeend",
+        `<div class="fp-err">❌ 媒体加载失败（${escapeHtml(rel.split("/").pop())}）</div>`);
+      el.remove();
+    }
+  }));
+}
+
 // 扫一遍容器里所有 data-asset 的 <img>，把 blob URL 填进去。
 // 之所以不直接在 innerHTML 里写 src：blob 是异步拿的，没法同步生成。
 async function paintAssetImages(root) {
@@ -3029,8 +3049,8 @@ async function loadPdf(scope, fp) {
 function canPreviewInline(fp, meta) {
   const name = String(fp).split(/[\\/]/).pop();
   const type = meta?.type || guessTypeOf(name);
-  if (["image", "video", "audio", "pdf", "text", "md", "doc"].includes(type)) {
-    // 老 .doc / .ppt / .xls 是二进制格式，docx-preview 读不了
+  if (["image", "video", "audio", "pdf", "text", "md", "doc", "sheet", "slide"].includes(type)) {
+    // 老 .doc / .ppt 是二进制格式，docx-preview 读不了（.xls 后端 SheetJS 能读，放行）
     if (type === "doc" && !/\.docx$/i.test(name)) return false;
     return true;
   }
@@ -3052,10 +3072,12 @@ async function previewAsset(fp, meta) {
   if (type === "image") {
     body = `<div class="fp-img-wrap"><img class="fp-img" data-asset="${escapeAttr(fp)}" alt="${escapeAttr(name)}"></div>`;
   } else if (type === "video") {
-    body = `<video class="fp-video" src="${escapeAttr(url)}" controls preload="metadata"></video>`;
+    // 音视频和图片同理：标签带不了凭据头，绝对 URL 直连必 403。
+    // 用 data-vsrc 标记，预览框挂载后异步填 blob URL（见 paintMedia）。
+    body = `<video class="fp-video" data-vsrc="${escapeAttr(fp)}" controls preload="metadata"></video>`;
   } else if (type === "audio") {
     body = `<div class="fp-audio"><div class="fp-audio-ic">${icon("audio", 40)}</div>` +
-      `<audio src="${escapeAttr(url)}" controls preload="metadata"></audio></div>`;
+      `<audio data-vsrc="${escapeAttr(fp)}" controls preload="metadata"></audio></div>`;
   } else if (type === "text" || type === "md" || /\.(md|txt|markdown|json|csv|log|js|mjs|css|html)$/i.test(name)) {
     // 文本类：拉回来渲染。md 用 renderMarkdown（含 ![[资源]] 卡片），纯文本 <pre>
     body = `<div class="fp-text" id="pv-text"><div class="muted fp-loading">正在读取…</div></div>`;
@@ -3067,6 +3089,15 @@ async function previewAsset(fp, meta) {
     // Word 预览：docx-preview（74KB 纯 JS，不用 Worker，不碰 WASM）
     // 老 .doc 是二进制格式，这个库读不了，走下面的降级分支
     body = `<div class="fp-docx" id="pv-docx"><div class="muted fp-loading">正在解析文档…</div></div>`;
+  } else if (type === "sheet" && /\.(xlsx|xlsm|xlsb)$/i.test(name)) {
+    // Excel：后端 SheetJS 解析（861KB 库只在后端加载，前端零依赖）
+    body = `<div class="fp-sheet" id="pv-sheet"><div class="muted fp-loading">正在解析表格…</div></div>`;
+  } else if (type === "sheet") {
+    // 老 .xls 是二进制格式，SheetJS 也认，走同一接口（后端判断）
+    body = `<div class="fp-sheet" id="pv-sheet"><div class="muted fp-loading">正在解析表格…</div></div>`;
+  } else if (type === "slide" && /\.(pptx|ppsx)$/i.test(name)) {
+    // PPT：后端抽每页文字大纲（保真不如真渲染，但内容可读、零依赖）
+    body = `<div class="fp-slide" id="pv-slide"><div class="muted fp-loading">正在解析演示文稿…</div></div>`;
   } else {
     // 诚实降级：面板里画不出来，给图标和系统打开入口
     body = `<div class="fp-none"><div class="fp-none-ic">${icon(TYPE_ICONS[type] || "file", 46)}</div>` +
@@ -3095,6 +3126,7 @@ async function previewAsset(fp, meta) {
   ov.addEventListener('click', (ev) => { if (ev.target === ov) closePreview(); });
   document.addEventListener('keydown', onEsc);
   paintAssetImages(ov);
+  paintMedia(ov);
   {
       const box = $("pv-text");
       if (box) {
@@ -3123,7 +3155,64 @@ async function previewAsset(fp, meta) {
   }
   loadPdf(ov, fp);
   renderDocx(ov, fp);
+  renderSheet(ov, fp);
+  renderSlide(ov, fp);
   return closePreview;
+}
+
+// Excel 预览：后端 /sheet/preview 返回 { sheets: [{name, rows}] }，前端画表。
+// 库内库外统一传原始路径，后端 readPreviewBytes 自己分辨。
+let _sheetWarned = false;
+async function renderSheet(scope, fp) {
+  const box = scope.querySelector("#pv-sheet");
+  if (!box) return;
+  try {
+    const r = await API.get(`/sheet/preview?path=${encodeURIComponent(fp)}`);
+    if (!r || !r.ok || !r.sheets?.length) throw new Error(r?.error || "没解出工作表");
+    const sheets = r.sheets;
+    let cur = 0;
+    const draw = () => {
+      const s = sheets[cur];
+      const table = s.rows.length
+        ? `<table class="fp-sheet-table"><tbody>` + s.rows.map((row) =>
+            `<tr>` + row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("") + `</tr>`).join("") + `</tbody></table>`
+        : `<p class="muted">（空工作表）</p>`;
+      box.innerHTML =
+        (sheets.length > 1
+          ? `<div class="fp-sheet-tabs">` + sheets.map((x, i) =>
+              `<button type="button" class="small${i === cur ? " primary" : ""}" data-si="${i}">${escapeHtml(x.name)}</button>`).join("") + `</div>`
+          : "") + table;
+      box.querySelectorAll("[data-si]").forEach((b) => b.addEventListener("click", () => { cur = +b.dataset.si; draw(); }));
+    };
+    draw();
+  } catch (err) {
+    box.innerHTML =
+      `<div class="fp-err">❌ 表格解析失败：${escapeHtml(err?.message || String(err))}` +
+      `<br><span class="muted">可以用右键「打开文件位置」交给 Excel 打开。</span></div>`;
+  }
+}
+
+// PPT 预览：后端 /slide/preview 返回每页文字大纲
+async function renderSlide(scope, fp) {
+  const box = scope.querySelector("#pv-slide");
+  if (!box) return;
+  try {
+    const r = await API.get(`/slide/preview?path=${encodeURIComponent(fp)}`);
+    if (!r || !r.ok) throw new Error(r?.error || "没解出内容");
+    const slides = r.slides || [];
+    if (!slides.length) {
+      box.innerHTML = `<div class="fp-none"><p class="muted">这份演示文稿里没抽到文字（可能是纯图片页）。</p></div>`;
+      return;
+    }
+    box.innerHTML = slides.map((s) =>
+      `<div class="fp-slide-page"><div class="fp-slide-no">第 ${s.n} 页</div>` +
+      `<pre class="fp-slide-text">${escapeHtml(s.text)}</pre></div>`).join("") +
+      (r.total > slides.length ? `<p class="muted">（共 ${r.total} 页，仅显示前 ${slides.length} 页）</p>` : "");
+  } catch (err) {
+    box.innerHTML =
+      `<div class="fp-err">❌ 演示文稿解析失败：${escapeHtml(err?.message || String(err))}` +
+      `<br><span class="muted">可以用右键「打开文件位置」交给 PowerPoint 打开。</span></div>`;
+  }
 }
 
 // 把 .docx 渲染进预览框。
