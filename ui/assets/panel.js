@@ -2946,6 +2946,30 @@ async function deleteAssetFlow(fp, isDir) {
   await loadCategories();
 }
 
+// PDF：拿字节转 blob 再塞 iframe。
+// 直接用 iframe src 会 403——宿主路由要凭据，iframe 带不了请求头。
+async function loadPdf(scope, fp) {
+  const wrap = scope.querySelector(".fp-pdf-wrap");
+  if (!wrap) return;
+  try {
+    const isAbs = /^([A-Za-z]:[\\/]|\/)/.test(String(fp));
+    const url = isAbs
+      ? `/external/raw?path=${encodeURIComponent(fp)}`
+      : `/_assets/${String(fp).replace(/^_assets\//, "")}`;
+    const resp = await hana.api.fetch(url);
+    if (!resp || !resp.ok) throw new Error(`HTTP ${resp ? resp.status : "无响应"}`);
+    const blob = await resp.blob();
+    // 明确指定 MIME，避免宿主给的 content-type 不被 iframe 认
+    const pdfBlob = blob.type === "application/pdf" ? blob : new Blob([blob], { type: "application/pdf" });
+    const blobUrl = URL.createObjectURL(pdfBlob);
+    wrap.innerHTML = `<iframe class="fp-pdf" src="${blobUrl}" title="PDF"></iframe>`;
+  } catch (err) {
+    wrap.innerHTML =
+      `<div class="fp-err">❌ PDF 打不开：${escapeHtml(err?.message || String(err))}` +
+      `<br><span class="muted">可以用右键「打开文件位置」交给系统阅读器。</span></div>`;
+  }
+}
+
 // 这个文件能不能在面板里直接看。决定"点一下就预览"还是"交给系统程序"。
 function canPreviewInline(fp, meta) {
   const name = String(fp).split(/[\\/]/).pop();
@@ -2981,7 +3005,9 @@ async function previewAsset(fp, meta) {
     // 文本类：拉回来渲染。md 用 renderMarkdown（含 ![[资源]] 卡片），纯文本 <pre>
     body = `<div class="fp-text" id="pv-text"><div class="muted fp-loading">正在读取…</div></div>`;
   } else if (type === "pdf") {
-    body = `<iframe class="fp-pdf" src="${escapeAttr(url)}" title="${escapeAttr(name)}"></iframe>`;
+    // <iframe src> 和 <img src> 一样，带不了自定义请求头 → 403 missing_credential。
+    // 先用 hana.api.fetch 取回字节转 blob，再把 blob URL 交给 iframe。
+    body = `<div class="fp-pdf-wrap"><div class="muted fp-loading" id="pv-pdf-load">正在载入 PDF…</div></div>`;
   } else if (type === "doc" && /\.docx$/i.test(name)) {
     // Word 预览：docx-preview（74KB 纯 JS，不用 Worker，不碰 WASM）
     // 老 .doc 是二进制格式，这个库读不了，走下面的降级分支
@@ -3040,7 +3066,8 @@ async function previewAsset(fp, meta) {
         });
       }
   }
-  renderDocx(ov);
+  loadPdf(ov, fp);
+  renderDocx(ov, fp);
   return closePreview;
 }
 
@@ -3050,15 +3077,13 @@ async function previewAsset(fp, meta) {
 //   2. img-src 只放 data: → 必须 useBase64URL:true，否则图片全裂
 //   3. fetch 要走 hana.api（带凭据），裸 fetch 拿不到包内路由鉴权
 let _docxMod = null;
-async function renderDocx(scope) {
+async function renderDocx(scope, fp) {
   const box = scope.querySelector("#pv-docx");
   if (!box) return;
-  // 从当前预览的标题取文件名，再反查它属于哪个资产路径
-  const nameEl = scope.querySelector(".fp-name");
-  const name = nameEl?.getAttribute("title") || "";
-  const fp = name ? findAssetPathByName(name) : "";
+  // fp 由调用方直接传入。早先这里靠文件名反查路径，
+  // 库外文件（绝对路径）根本不在 filesItems 里，必然查不到。
   if (!fp) {
-    box.innerHTML = `<div class="fp-err">❌ 找不到这个文件在库里的位置</div>`;
+    box.innerHTML = `<div class="fp-err">❌ 没有拿到文件路径</div>`;
     return;
   }
   try {
@@ -3105,12 +3130,6 @@ async function renderDocx(scope) {
       `<div class="fp-err">❌ 文档渲染失败：${escapeHtml(err?.message || String(err))}` +
       `<br><span class="muted">可以用右键「打开文件位置」交给 Word 打开。</span></div>`;
   }
-}
-
-// 按文件名反查它在 filesItems 里的完整相对路径
-function findAssetPathByName(name) {
-  const hit = (filesItems || []).find((x) => (x.name || x.path?.split(/[\\/]/).pop()) === name);
-  return hit?.path || "";
 }
 
 // 库内文件 → 交给宿主 SDK 的资源引用。

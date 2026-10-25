@@ -1,5 +1,67 @@
 # 念念收藏夹 - 更新日志
 
+## [0.17.2] - 2026-10-25
+
+### 两个不同的根因，都不是同一回事
+
+**PDF：403 missing_credential**
+
+截图里 PDF 预览框显示的是那句熟悉的 `missing_credential`。
+和 0.13.0 图片全裂**同一个根因**：`<iframe src>` 和 `<img src>` 一样，
+带不了自定义请求头，宿主路由拿不到凭据就 403。
+
+改法：先用 `hana.api.fetch` 取回字节转成 blob，再把 blob URL 交给 iframe。
+这套做法在 0.13.0 修图片时已经验证过，直接复用。
+
+顺带显式指定 `application/pdf`——宿主给的 content-type 有时候 iframe 不认。
+
+**docx：「找不到这个文件在库里的位置」**
+
+这个更蠢。`renderDocx` 当初是靠**文件名反查路径**：
+
+```js
+const name = scope.querySelector(".fp-name")?.getAttribute("title");
+const fp = findAssetPathByName(name);   // ← 靠名字猜路径
+```
+
+库外文件（绝对路径）根本不在 `filesItems` 里，必然查不到。
+而 `previewAsset(fp, meta)` 本来就有 `fp`，我却舍近求远绕了一圈。
+
+改成直接传入。`findAssetPathByName` 变成死代码，删掉了。
+
+### 真机验证
+
+这次不敢只跑单元测试了——上一版就是测试全绿、真机不能用。
+
+用真实 Edge(Chromium) 跑了一遍 PDF 的 blob 路线：
+
+```
+blob 路线成功            ✓
+生成的是 blob: URL       ✓
+MIME 是 application/pdf  ✓
+内容是合法 PDF（%PDF）    ✓  魔数 25 50 44 46 2d
+iframe 载入了            ✓
+```
+
+5 项全过。docx 那边之前也验过：81KB 真实文档，字节数一致，PK 头正确。
+
+### 测试桩补全
+
+`preview-real-check` 的桩只给了 `json()` 和 `text()`，没有 `blob()`，
+也没有 `URL.createObjectURL`（jsdom 不实现）。PDF 改走 blob 后在这套桩下必然挂。
+补上了这两个，测试才真正覆盖到新代码。
+
+### 一个测试断言的教训
+
+`preview-real-check` 里有个用例叫「普通文件 → 表.docx」，断言它走降级分支。
+但 docx 现在有专属预览了，这个用例本身失效了。
+改成 `程序.exe`——那才是真正「画不出来」的类型。
+
+**测试用例也要跟着功能演进，否则它测的是过时的东西。**
+
+### 测试
+
+新增 `fix-0172-check`（22 项）。26 个测试文件 **923 项** + 28 项视觉体检 + 13 项 docx 布局，全绿。
 ## [0.17.1] - 2026-10-25
 
 ### 上一版为什么没用：两个 bug 叠在一起
