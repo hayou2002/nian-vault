@@ -1,5 +1,70 @@
 # 念念收藏夹 - 更新日志
 
+## [0.19.0] - 2026-10-25
+
+### 两个关键点终于同时对了
+
+前几版各对一半，所以一直差一口气：
+
+| 版本 | 路径 | token | 结果 |
+|---|---|---|---|
+| 0.18.6 | ✘ 拼到 ui 静态目录 | ✔ 从 search 取 | 404 HTML → 码 4 |
+| 0.18.9 | ✔ routes | ✘ 从 pathname 取 | 403 JSON → 码 4 |
+| **0.19.0** | **✔ routes** | **✔ 从 search 取** | **通** |
+
+两件事的正确来源：
+
+**① 路径必须走 `routes/`**
+`ui/` 是静态文件服务，只返回 `ui/` 目录里真实存在的文件。
+`external/raw` 是后端 Hono 的动态路由，挂在 `routes/` 前缀下。
+
+**② token 必须从 `location.search` 取**
+SDK 的权威实现：
+```js
+function readSurfaceSession(w) {
+  return new URLSearchParams(w.location.search).get("appSurfaceSession") || null;
+}
+function pluginApiFetch(targetWindow, input, init) {
+  const surfaceSession = readSurfaceSession(targetWindow);
+  headers.set("X-Hana-App-Surface-Session", surfaceSession);  // ← 就是它
+}
+```
+图片 / PDF / docx 全部正常，正因为它们走 `hana.api.fetch` 拿这个 token。
+
+### 兜底通道也统一了
+
+直连失败时的兜底改成**不带任何自定义 header** 的 `hana.api.fetch`，
+和图片/PDF/docx 完全同一条通道（它们都正常，说明这条路一定能过宿主）。
+之前兜底带 `Range` 头，怀疑被宿主桥拒绝（截图里的 400 可能就是这个）。
+
+### 端到端验证（完全复刻真实形态）
+
+```
+页面: /api/apps/nian-vault/ui/_surface/{desc}/panel.html?appSurfaceSession={token}
+视频: /api/apps/nian-vault/routes/external/raw?path=...&appSurfaceSession={token}
+
+视频: 175.0 MB
+页面 search 带 token: true
+状态: meta 8531s 1600x720
+Range 请求: 4        ← 只发 4 段，175MB 主体没动
+readyState: 4
+→ ✓ 直连可播
+```
+
+### 关于内置播放器
+
+没有引入。理由还是那条：播放器库只管**控件和解码调度**，
+不管字节怎么来。这次跑通靠的是修对 URL 的两个组成部分，
+不是换播放器。原生 `<video>` 拿到正确 URL 后工作得比任何库都直接。
+
+如果你希望有更丰富的控件（倍速、画面比例、截图），那可以后续单独加，
+但那是「体验增强」，不是「能不能播」的问题。
+
+### 测试
+
+- 新增 `direct-search-token-e2e`：真实页面形态 + search token + 175MB 直连
+- `media-playback-check` 17 项：两关键点、运行时拼 URL、兜底通道
+
 ## [0.18.9] - 2026-10-25
 
 ### 回到直连流式：不把文件塞进 App 内存

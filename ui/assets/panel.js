@@ -106,13 +106,13 @@ function guessMediaType(fp) {
 
 // 直连 URL：交给 <video src> 自己流式拉取，App 内存里只留一个字符串。
 //
-// 为什么能直连：宿主鉴权链有三条路——
-//   c.kind === "scoped" ? c.sessionToken : header || query(appSurfaceSession) || cookie
-// 其中 c.sessionToken 就是页面 pathname 里 /_surface/{token}/ 那一段。
-// <video> 发请求带不了自定义 header，但能带 query，所以把这段 token 放 query。
-//
-// 路径必须走 routes/：ui/ 是静态文件服务，只返回 ui 目录里真实存在的文件，
-// external/raw 是后端动态路由，挂的是 routes/ 前缀。
+// 两个关键点，缺一不可：
+//   ① 路径走 routes/  —— ui/ 是静态文件服务，只返回 ui 目录里真实存在的文件，
+//      external/raw 是后端动态路由，挂在 routes/ 前缀下。
+//   ② token 从 location.search 取 —— 这是 SDK 的权威来源：
+//      readSurfaceSession(w) = new URLSearchParams(w.location.search).get("appSurfaceSession")
+//      pluginApiFetch 就是用它塞 X-Hana-App-Surface-Session 头的。
+//      图片/PDF/docx 全部正常，正因为它们走 hana.api.fetch 拿这个 token。
 function mediaSrcUrl(fp) {
   const s = String(fp || "");
   if (!s) return "";
@@ -122,11 +122,7 @@ function mediaSrcUrl(fp) {
     : `_assets/${s.replace(/^[._]*assets[/_]/, "")}`;
 
   const appId = (/\/api\/apps\/([^/]+)\//.exec(location.pathname) || [])[1];
-  // token 优先取 pathname 的 _surface 段（权威）；search 只作补充。
-  const pathTok = (/\/_surface\/([^/]+)/.exec(location.pathname) || [])[1] || "";
-  const searchTok = new URLSearchParams(location.search).get("appSurfaceSession") || "";
-  let token = pathTok || searchTok;
-  try { token = decodeURIComponent(token); } catch { /* 保持原样 */ }
+  const token = new URLSearchParams(location.search).get("appSurfaceSession") || "";
 
   if (!appId) {
     const base = location.origin + location.pathname.replace(/[^/]*$/, "");
@@ -155,70 +151,41 @@ async function mediaBlobUrl(fp, onProgress) {
   }
   if (_mediaBlobPending.has(s)) return _mediaBlobPending.get(s);
   const isAbs = /^([A-Za-z]:[\\/]|\/)/.test(s);
-  const base = isAbs ? `/external/raw?path=${encodeURIComponent(s)}` : `/_assets/${s.replace(/^[._]*assets[/_]/, "")}`;
+  const url = isAbs
+    ? `/external/raw?path=${encodeURIComponent(s)}`
+    : `/_assets/${s.replace(/^[._]*assets[/_]/, "")}`;
 
   const task = (async () => {
     _mediaErr.delete(s);
     try {
-      const CHUNK = 4 * 1024 * 1024;
+      // 关键：不带任何自定义 header（包括 Range）。
+      // 这条通道和图片/PDF/docx 完全一致——它们都正常，说明这条路能过宿主。
+      const res = await hana.api.fetch(url);
+      if (!res || !res.ok) throw new Error(`HTTP ${res ? res.status : "无响应"}`);
 
-      // 第一段顺便探路：能拿 206 就分段拉，拿 200 说明服务端忽略 Range（整读）
-      const first = await hana.api.fetch(base, { headers: { Range: `bytes=0-${CHUNK - 1}` } });
-      if (!first || !first.ok) {
-        throw new Error(`HTTP ${first ? first.status : "无响应"}${first && first.status === 403 ? "（鉴权未通过）" : ""}`);
-      }
-
-      let chunks = [];
-      let received = 0;
-      let total = 0;
-      let canRange = first.status === 206;
-
-      if (canRange) {
-        const cr = first.headers.get("content-range") || "";
-        const m = /\/(\d+)\s*$/.exec(cr);
-        total = m ? Number(m[1]) : 0;
-      } else {
-        total = Number(first.headers.get("content-length")) || 0;
-      }
-
-      chunks.push(new Uint8Array(await first.arrayBuffer()));
-      received += chunks[0].byteLength;
-      onProgress?.(received, total);
-
-      if (canRange && total > 0) {
-        // 继续按段拉，直到拿完
-        while (received < total) {
-          const end = Math.min(received + CHUNK - 1, total - 1);
-          const r = await hana.api.fetch(base, { headers: { Range: `bytes=${received}-${end}` } });
-          if (!r || !r.ok) throw new Error(`第 ${Math.floor(received / CHUNK) + 1} 段失败：HTTP ${r ? r.status : "无响应"}`);
-          const seg = new Uint8Array(await r.arrayBuffer());
-          if (!seg.byteLength) break; // 防御：空段直接收手，别死循环
-          chunks.push(seg);
-          received += seg.byteLength;
+      const total = Number(res.headers.get("content-length")) || 0;
+      let blob;
+      if (res.body && typeof res.body.getReader === "function") {
+        const reader = res.body.getReader();
+        const chunks = [];
+        let received = 0;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          received += value.byteLength;
           onProgress?.(received, total);
         }
-        if (received < total) throw new Error(`只读到 ${fmtSize(received)} / ${fmtSize(total)}，未读完`);
-      } else if (!canRange) {
-        // 服务端整读：把它当一次性响应读完整
-        const reader = first.body?.getReader?.();
-        if (reader) {
-          for (;;) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            chunks.push(value);
-            received += value.byteLength;
-            onProgress?.(received, total);
-          }
-        }
+        blob = new Blob(chunks, { type: guessMediaType(s) || "application/octet-stream" });
+      } else {
+        blob = await res.blob();
+        onProgress?.(blob.size, blob.size);
       }
-
-      const blob = new Blob(chunks, { type: guessMediaType(s) || "application/octet-stream" });
       const burl = URL.createObjectURL(blob);
       _mediaBlobCache.set(s, burl);
       return burl;
     } catch (err) {
-      const msg = String(err?.message || err);
-      _mediaErr.set(s, msg);
+      _mediaErr.set(s, String(err?.message || err));
       console.warn("[nian-vault] 媒体读取失败：", s, err);
       return "";
     } finally {
