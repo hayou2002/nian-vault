@@ -1,5 +1,41 @@
 # 念念收藏夹 - 更新日志
 
+## [0.18.2] - 2026-10-25
+
+### 175MB 外部视频黑屏 0:00 —— 整只 blob 撑不住，改 Range 分段
+
+真机：视频有界面了但黑屏停在 0:00。ffprobe 查了文件本身：H.264/AAC
+完全正常（Chromium 原生支持），175MB / 2.4 小时。问题在传输层：
+0.18.1 的方案是整只拉进内存转 blob，175MB 一次拉完在那条链路上撑不住。
+
+两层修复：
+
+#### 后端：/external/raw 支持 HTTP Range
+
+播放器只要前几百 KB 就能出画面，剩下边播边拉。解析 `Range: bytes=a-b`，
+返回 206 + `Content-Range` + `Accept-Ranges`，支持前段/中段/后缀式（`-N`）/越界钳制。
+
+安全模型不变：先 extFs.stat 验路径（受引用注册表约束），切片用 node:fs
+直读——沙箱后端的 node:fs 可以直读本机路径（实测 D 盘 175MB 视频按
+64KB 区间切读，头 16 字节正是 ftyp 盒子）。ResourceIO 没有区间读能力，
+这是唯一路径。
+
+#### 前端：video 改 scoped URL 直连
+
+反编译宿主 bundle 确认：`_surface/{token}/` 路径段本身就是鉴权凭证
+（scoped 模式从路径解 sessionToken），不依赖 header。所以
+`new URL("external/raw?...", location)` 拼出的 URL（token 天然在路径里）
+`<video src>` 直接用——浏览器自己发 Range 请求，完全不占面板内存。
+
+audio 保持 blob（文件小，一次拉完避免每次 seek 都打 206）；图片不动。
+
+### 验证
+
+- range-check 15 项：真实 175MB 视频文件，206/Content-Range/字节逐一比对/
+  后缀式/越界钳制全过
+- fix-0182-check 17 项钉死前后端改动
+- 30 个测试文件 **984 项** + 28 视觉 + 13 docx 布局，全绿
+
 ## [0.18.1] - 2026-10-25
 
 ### 外部视频「媒体加载失败」+「0 B」+ 大小限制（三处）

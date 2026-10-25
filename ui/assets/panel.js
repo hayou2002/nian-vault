@@ -118,6 +118,21 @@ async function mediaBlobUrl(fp) {
   return task;
 }
 
+// 标签直连 URL：相对面板自己的 _surface/{token}/ basePath 解析，
+// token 在路径里，<video src> 不需要 header 也能过宿主鉴权。
+// 大视频靠浏览器原生 Range 按需拉段，不整只进内存。
+function mediaSrcUrl(fp) {
+  const s = String(fp || "");
+  if (!s) return "";
+  const isAbs = /^([A-Za-z]:[\\/]|\/)/.test(s);
+  const rel = isAbs
+    ? `external/raw?path=${encodeURIComponent(s)}`
+    : `_assets/${s.replace(/^[._]*assets[/_]/, "")}`;
+  // 页面 URL: .../_surface/{token}/panel.html → base 就是 .../_surface/{token}/
+  const base = location.origin + location.pathname.replace(/[^/]*$/, "");
+  return new URL(rel, base).href;
+}
+
 // video / audio 的 blob 填充：和图片同款机制（data-vsrc → mediaBlobUrl）。
 // 音视频文件大，交给浏览器自己的 blob URL 播放器，面板只管取字节。
 async function paintMedia(root) {
@@ -126,6 +141,18 @@ async function paintMedia(root) {
   await Promise.all(els.map(async (el) => {
     const rel = el.dataset.vsrc;
     el.removeAttribute("data-vsrc");
+    // video：scoped URL 直连，浏览器原生 Range 边播边拉（大文件不进内存）。
+    // audio：小文件走 blob（一次性拉完，避免每次 seek 都打一次 206）。
+    if (el.tagName.toLowerCase() === "video") {
+      el.src = mediaSrcUrl(rel);
+      el.addEventListener("error", () => {
+        const wrap = el.closest(".fp-audio, .preview-body");
+        if (wrap) wrap.insertAdjacentHTML("beforeend",
+          `<div class="fp-err">❌ 视频加载失败（${escapeHtml(String(rel).split(/[\\/]/).pop())}）` +
+          `<br><span class="muted">可以右键「打开文件位置」用系统播放器看。</span></div>`);
+      }, { once: true });
+      return;
+    }
     const url = await mediaBlobUrl(rel);
     if (url) el.src = url;
     else {
