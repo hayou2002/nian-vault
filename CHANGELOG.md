@@ -1,5 +1,35 @@
 # 念念收藏夹 - 更新日志
 
+## [0.18.3] - 2026-10-25
+
+### 视频仍黑屏：浏览器首发的开区间 Range 掉进了整读分支
+
+0.18.2 装机后视频还是黑屏（但错误面变成了新加的「视频加载失败」）。
+顺藤查出一个自己埋的雷：**浏览器首发请求是 `Range: bytes=0-`（无 end）**，
+旧代码把空 end 当 `end=total-1` 处理——等于整读 183MB 塞回去，链路当场撑死。
+
+测试怎么没拦住：range-check 全用闭区间（`bytes=0-65535`），
+没用浏览器真实形态（开区间）测。这次 range-open-check 用真机首发形态补上。
+
+修复（对齐标准流媒体行为）：
+
+- 开区间 `bytes=a-` 也走 206，**单段钳到 4MB**（首帧快、seek 轻）
+- `start >= total` → 416 + `Content-Range: bytes */total`
+- 多段 Range（`bytes=a-b,c-d`）不支持，忽略按 200 整回
+- 后缀式 `bytes=-N` 逻辑重写（空 end 现在是 NaN 不是 total-1，旧算法会算错）
+
+顺带确认了 scoped 直连的转发链路没问题：反编译宿主 app-runtime-proxy，
+`LGe` 把 `_surface/{token}/xxx` 的 upstreamPath 原样转发到
+`http://127.0.0.1:{port}/xxx`，query 只剥 appSurfaceSession 等几个特定参数
+（`path=` 保留），且 scoped 路径形态的 GET 直接放行。架构正确，雷在 Range 解析。
+
+### 验证
+
+- range-open-check 10 项：真机首发形态（开区间）+ seek + 越界 416 + 多段降级，
+  真实 175MB 视频字节逐一比对
+- 更新 2 条过时断言（end 越界现在按 4MB 钳制而非钳到 total-1）
+- 31 个测试文件 **994 项** + 28 视觉 + 13 docx 布局，全绿
+
 ## [0.18.2] - 2026-10-25
 
 ### 175MB 外部视频黑屏 0:00 —— 整只 blob 撑不住，改 Range 分段
