@@ -128,9 +128,23 @@ function mediaSrcUrl(fp) {
   const rel = isAbs
     ? `external/raw?path=${encodeURIComponent(s)}`
     : `_assets/${s.replace(/^[._]*assets[/_]/, "")}`;
-  // 页面 URL: .../_surface/{token}/panel.html → base 就是 .../_surface/{token}/
-  const base = location.origin + location.pathname.replace(/[^/]*$/, "");
-  return new URL(rel, base).href;
+
+  // 关键：不能相对页面路径拼。
+  // 页面在 /api/apps/{id}/ui/_surface/{token}/ 下，而 ui 是【静态文件服务】，
+  // external/raw 不是磁盘上的文件 → 404 HTML 错误页 → <video> 报错误码 4。
+  // 正解是走 routes 动态路由，凭据用 query 带：
+  //   宿主鉴权链 = header(X-Hana-App-Surface-Session) || query(appSurfaceSession) || cookie
+  // 标签发请求带不了 header，但 query 可以。
+  const appId = (/\/api\/apps\/([^/]+)\//.exec(location.pathname) || [])[1];
+  const token = (/\/_surface\/([^/]+)/.exec(location.pathname) || [])[1];
+  if (!appId) {
+    // 兜底：认不出页面形态时退回相对拼法（老宿主）
+    const base = location.origin + location.pathname.replace(/[^/]*$/, "");
+    return new URL(rel, base).href;
+  }
+  const sep = rel.includes("?") ? "&" : "?";
+  const auth = token ? `${sep}appSurfaceSession=${encodeURIComponent(token)}` : "";
+  return `${location.origin}/api/apps/${appId}/routes/${rel}${auth}`;
 }
 
 // video / audio 的 blob 填充：和图片同款机制（data-vsrc → mediaBlobUrl）。

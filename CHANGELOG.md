@@ -1,5 +1,60 @@
 # 念念收藏夹 - 更新日志
 
+## [0.18.5] - 2026-10-25
+
+### 黑屏真凶：视频请求打到了 ui 静态目录，404 HTML 被当成视频
+
+0.18.4 的错误码 **4（来源不支持）** 加上截图里的 URL 形态，把答案摆在了明面上：
+
+```
+页面：/api/apps/nian-vault/ui/_surface/{token}/
+我拼：/api/apps/nian-vault/ui/_surface/{token}/external/raw?path=...
+                                                    ↑ 这个路径不存在于 ui/ 目录
+```
+
+`ui` 是**静态文件服务**——它只返回 `ui/` 目录里真实存在的文件。
+`external/raw` 是后端 Hono 的动态路由，挂的是 `routes/` 前缀。
+我把动态路由挂到了静态目录下 → 服务器返回 404 的 **HTML 错误页** →
+`<video>` 拿到一坨 HTML → `error.code = 4`（来源不支持）。
+
+所以前几版 Range、CSP、内存全是对的，**可我请求的根本不是那个路由**。
+
+### 修法：走 routes + 凭据放 query
+
+```js
+/api/apps/{appId}/routes/external/raw?path=...&appSurfaceSession={token}
+```
+
+为什么凭据能放 query：宿主鉴权链是
+```
+header(X-Hana-App-Surface-Session) || query(appSurfaceSession) || cookie
+```
+（bundle 里鉴权函数就这么写）。`<video src>` 带不了 header，但带 query 没问题。
+
+库内文件同理：`/api/apps/{id}/routes/_assets/x.mp4?appSurfaceSession=...`
+（之前也是靠 /_assets/ 直接给的 hana.api.fetch，标签用不了，现在统一了）
+
+### 验证（这次是端到端，不再靠推断）
+
+起真实 HTTP 服务 + 真实 175MB 视频 + 真实 Edge 浏览器的 `<video>`：
+
+```
+状态: meta 8531s 1600x720
+{ ok:false, code:'timeout', readyState:4, duration:8531 }
+→ ✓ 完整加载（readyState=4 = HAVE_ENOUGH_DATA）
+```
+
+`readyState: 4` 是硬证据：浏览器把整个视频流读到「数据足够」状态，
+时长 8531 秒（=2.37 小时，与 ffprobe 一致）、分辨率 1600×720 全对。
+headless 里 `play()` 被自动播放策略挡住导致 currentTime 停在 0，
+那不是加载问题（真实 App 里用户点播放即可）。
+
+### 测试
+
+- 新增 `mediasrc-url-check` 11 项：两种页面 URL 形态下拼出的 routes 地址全对
+- 新增 `video-e2e-check2`：真实浏览器 + 真实视频的端到端加载验证
+- 31 个测试文件 **1209 项** + 28 视觉 + 13 docx 布局，全绿
+
 ## [0.18.4] - 2026-10-25
 
 ### 视频：直连 + 条件降级，并把失败原因摆到脸上
