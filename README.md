@@ -1,8 +1,10 @@
 # 念念收藏夹（nian-vault）
 
-个人数字资产仓库，运行在 Hana（OpenHanako）平台上的 v2 App。把文字、网页、视频、图片、文件引用、经验笔记统一收藏成一个可备份的 Markdown 库，AI 协助归档整理，Agent 干活时可直接调用库内资产。
+<img src="docs/overview.svg" alt="念念收藏夹总览：三栏界面、多种预览、AI 整理、纯 Markdown 存储" width="100%">
 
-当前版本：**0.20.0**（详见 CHANGELOG.md）
+个人数字资产仓库，运行在 Hana（OpenHanako）平台上的 v2 App。把文字、网页、图片、文件引用、经验笔记统一收藏成一个可备份的 Markdown 库，AI 协助归档整理，Agent 干活时可直接调用库内资产。
+
+当前版本：**0.20.0**（详见 [CHANGELOG.md](CHANGELOG.md)）· [下载安装包](https://github.com/hayou2002/nian-vault/releases/latest)
 
 ## 它解决什么问题
 
@@ -10,6 +12,8 @@
 - **收藏什么都能装**：笔记、剪藏、B站视频（带封面卡与内嵌播放）、文件路径引用、经验台账……类型存在每条的 front matter 里
 - **AI 是整理员**：对话里丢一条链接说「收藏这个」，Agent 会抓取正文/封面/元信息后入库；也能让 AI「把收件箱里同类的归到一起」
 - **数据是你自己的**：整个库就是一个文件夹，Markdown 文件即数据库，可直接打包备份、可换存储位置，没有私有格式绑架
+
+<img src="docs/preview.svg" alt="预览能力：图片、PDF、Word、Excel、PPT 在面板内直接渲染；本地视频交给系统播放器" width="100%">
 
 ## 架构与目录
 

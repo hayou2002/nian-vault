@@ -1,0 +1,134 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1220 412" width="1220" height="412" role="img" aria-label="念念收藏夹：Hana 平台上的个人数字资产仓库，三栏界面、多种预览、AI 整理、纯 Markdown 存储">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fdfaf6"/>
+      <stop offset="1" stop-color="#f6ede2"/>
+    </linearGradient>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a332c"/>
+      <stop offset="1" stop-color="#1e1a16"/>
+    </linearGradient>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="7" flood-color="#5a4632" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+
+  <rect width="1220" height="412" fill="url(#bg)"/>
+
+  <!-- ===== 标题区 ===== -->
+  <g transform="translate(48 30)">
+    <rect x="0" y="0" width="40" height="40" rx="12" fill="url(#tile)"/>
+    <path d="M20 15c-3-2.4-7-2.8-10.5-2v16c3.5-.8 7.5-.4 10.5 2 3-2.4 7-2.8 10.5-2V13c-3.5-.8-7.5-.4-10.5 2z"
+          fill="#fdfaf6" fill-opacity="0.12" stroke="#fdfaf6" stroke-width="1.4" stroke-linejoin="round"/>
+    <path d="M20 15v16" stroke="#fdfaf6" stroke-width="1.2"/>
+    <text x="56" y="19" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="20" font-weight="600" fill="#2f2a24">念念收藏夹</text>
+    <text x="56" y="39" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="12.5" fill="#8d8274">个人数字资产仓库 · 运行在 Hana（OpenHanako）平台上的 v2 App</text>
+  </g>
+
+  <!-- ===== 四张能力卡 ===== -->
+  <g transform="translate(48 98)">
+
+    <!-- 卡 1：三栏界面 -->
+    <g transform="translate(0 0)">
+      <rect x="0" y="0" width="268" height="192" rx="16" fill="#ffffff" stroke="#e8dccc" filter="url(#soft)"/>
+      <g transform="translate(22 18)">
+        <rect x="0" y="0" width="224" height="74" rx="8" fill="#faf6ef" stroke="#eee3d3"/>
+        <rect x="0" y="0" width="52" height="74" rx="8" fill="#efe8da"/>
+        <rect x="62" y="10" width="54" height="54" rx="5" fill="#fff" stroke="#eee3d3"/>
+        <rect x="123" y="10" width="90" height="8" rx="3" fill="#e5d9c7"/>
+        <rect x="123" y="24" width="72" height="6" rx="3" fill="#eee3d3"/>
+        <rect x="123" y="36" width="82" height="6" rx="3" fill="#eee3d3"/>
+        <rect x="123" y="48" width="60" height="6" rx="3" fill="#eee3d3"/>
+      </g>
+      <text x="22" y="120" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="13.5" font-weight="600" fill="#2f2a24">三栏界面，一眼看到全局</text>
+      <text x="22" y="141" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="11" fill="#5d5348">分类树 · 条目列表 · 详情编辑</text>
+      <text x="22" y="159" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="11" fill="#8d8274">卡片 / 列表 / 紧凑，三种密度随意切</text>
+      <text x="22" y="177" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="11" fill="#8d8274">拖拽建层级，删父条目子条目自动上提</text>
+    </g>
+
+    <!-- 卡 2：预览能力 -->
+    <g transform="translate(288 0)">
+      <rect x="0" y="0" width="268" height="192" rx="16" fill="#ffffff" stroke="#e8dccc" filter="url(#soft)"/>
+      <g transform="translate(22 18)">
+        <rect x="0" y="0" width="224" height="74" rx="8" fill="#faf6ef" stroke="#eee3d3"/>
+        <rect x="12" y="12" width="46" height="50" rx="5" fill="#e8dccc"/>
+        <path d="M18 54l11-14 8 9 6-7 9 12z" fill="#c9b69c"/>
+        <circle cx="24" cy="24" r="4" fill="#fdfaf6"/>
+        <rect x="68" y="12" width="46" height="50" rx="5" fill="#fff" stroke="#eee3d3"/>
+        <rect x="75" y="20" width="32" height="4" rx="2" fill="#ddd0bb"/>
+        <rect x="75" y="29" width="26" height="3" rx="1.5" fill="#eee3d3"/>
+        <rect x="75" y="36" width="30" height="3" rx="1.5" fill="#eee3d3"/>
+        <rect x="75" y="43" width="20" height="3" rx="1.5" fill="#eee3d3"/>
+        <rect x="124" y="12" width="46" height="50" rx="5" fill="#fff" stroke="#eee3d3"/>
+        <path d="M124 24h46M124 36h46M124 48h46M140 12v50M162 12v50" stroke="#eee3d3" stroke-width="1.2"/>
+        <rect x="180" y="12" width="32" height="50" rx="5" fill="#fff" stroke="#eee3d3"/>
+        <circle cx="196" cy="30" r="8" fill="none" stroke="#c2703d" stroke-width="1.6"/>
+        <path d="M196 24v6l4 3" stroke="#c2703d" stroke-width="1.6" stroke-linecap="round" fill="none"/>
+      </g>
+      <text x="22" y="120" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="13.5" font-weight="600" fill="#2f2a24">双击就在面板里看</text>
+      <text x="22" y="141" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="11" fill="#5d5348">图片 · PDF · Word · Excel · PPT · 音频</text>
+      <text x="22" y="159" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="11" fill="#8d8274">PDF 走 pdf.js 画布，不靠浏览器内置</text>
+      <text x="22" y="177" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="11" fill="#8d8274">视频交给系统播放器打开</text>
+    </g>
+
+    <!-- 卡 3：AI 整理 -->
+    <g transform="translate(576 0)">
+      <rect x="0" y="0" width="268" height="192" rx="16" fill="#ffffff" stroke="#e8dccc" filter="url(#soft)"/>
+      <g transform="translate(22 18)">
+        <rect x="0" y="0" width="224" height="74" rx="8" fill="#faf6ef" stroke="#eee3d3"/>
+        <rect x="12" y="12" width="120" height="26" rx="9" fill="#fff" stroke="#eee3d3"/>
+        <rect x="20" y="21" width="88" height="4" rx="2" fill="#ddd0bb"/>
+        <rect x="20" y="29" width="52" height="4" rx="2" fill="#eee3d3"/>
+        <rect x="78" y="44" width="134" height="24" rx="9" fill="#c2703d" fill-opacity="0.10" stroke="#e8c4aa"/>
+        <circle cx="90" cy="56" r="4" fill="#c2703d"/>
+        <rect x="100" y="53" width="72" height="4" rx="2" fill="#d9a980"/>
+        <rect x="100" y="60" width="46" height="3" rx="1.5" fill="#e8c4aa"/>
+        <path d="M138 38v-6M134 35l4-3 4 3" stroke="#c2703d" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+      <text x="22" y="120" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="13.5" font-weight="600" fill="#2f2a24">说一句就收进库里</text>
+      <text x="22" y="141" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="11" fill="#5d5348">丢个链接说「收藏这个」，AI 抓正文</text>
+      <text x="22" y="159" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="11" fill="#8d8274">自动起标题、打标签、写摘要</text>
+      <text x="22" y="177" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="11" fill="#8d8274">8 个工具暴露给 Agent 直接用</text>
+    </g>
+
+    <!-- 卡 4：数据归属 -->
+    <g transform="translate(864 0)">
+      <rect x="0" y="0" width="268" height="192" rx="16" fill="#ffffff" stroke="#e8dccc" filter="url(#soft)"/>
+      <g transform="translate(22 18)">
+        <rect x="0" y="0" width="224" height="74" rx="8" fill="#faf6ef" stroke="#eee3d3"/>
+        <path d="M14 20h30l5 6h40v38a4 4 0 0 1-4 4H18a4 4 0 0 1-4-4z" fill="#ffe9cf" stroke="#e8c9a4" stroke-width="1.2"/>
+        <rect x="24" y="34" width="26" height="30" rx="3" fill="#fff" stroke="#e0d2bd"/>
+        <text x="30" y="49" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="7.5" font-weight="700" fill="#a95c2f">MD</text>
+        <rect x="56" y="34" width="26" height="30" rx="3" fill="#fff" stroke="#e0d2bd"/>
+        <text x="62" y="49" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="7.5" font-weight="700" fill="#a95c2f">MD</text>
+        <rect x="88" y="34" width="26" height="30" rx="3" fill="#fff" stroke="#e0d2bd"/>
+        <text x="94" y="49" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="7.5" font-weight="700" fill="#a95c2f">MD</text>
+        <path d="M132 43h78M132 53h58M132 63h68" stroke="#ddd0bb" stroke-width="2" stroke-linecap="round"/>
+        <rect x="132" y="20" width="78" height="13" rx="4" fill="#c2703d" fill-opacity="0.12"/>
+        <text x="140" y="30" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="7.5" font-weight="600" fill="#a95c2f">纯文本 · 可备份</text>
+      </g>
+      <text x="22" y="120" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="13.5" font-weight="600" fill="#2f2a24">数据永远是你自己的</text>
+      <text x="22" y="141" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="11" fill="#5d5348">整个库就是一个文件夹</text>
+      <text x="22" y="159" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="11" fill="#8d8274">换机器直接拷目录，没有私有格式</text>
+      <text x="22" y="177" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="11" fill="#8d8274">内置打包备份，位置可挪到任意盘</text>
+    </g>
+  </g>
+
+  <!-- ===== 底部 ===== -->
+  <g transform="translate(48 296)">
+    <line x1="0" y1="0" x2="1124" y2="0" stroke="#eadfce" stroke-width="1"/>
+    <text x="0" y="26" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="12" fill="#8d8274">不需要装任何依赖：只用宿主 SDK 与 Node 内置模块，预览用的 docx-preview / pdf.js / SheetJS 已打包在内</text>
+    <text x="0" y="48" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="12" fill="#8d8274">安装：Hana → 设置 → 应用 → 导入应用，指向本目录；首次启动自动建库，开箱可用</text>
+
+    <g transform="translate(0 70)">
+      <rect x="0" y="0" width="86" height="24" rx="12" fill="#ffffff" stroke="#e8dccc"/>
+      <text x="43" y="16" text-anchor="middle" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="11" fill="#5d5348">Hana v2 App</text>
+      <rect x="94" y="0" width="112" height="24" rx="12" fill="#ffffff" stroke="#e8dccc"/>
+      <text x="150" y="16" text-anchor="middle" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="11" fill="#5d5348">纯 Markdown 存储</text>
+      <rect x="214" y="0" width="86" height="24" rx="12" fill="#ffffff" stroke="#e8dccc"/>
+      <text x="257" y="16" text-anchor="middle" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="11" fill="#5d5348">零外部依赖</text>
+      <rect x="308" y="0" width="150" height="24" rx="12" fill="#ffffff" stroke="#e8dccc"/>
+      <text x="383" y="16" text-anchor="middle" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="11" fill="#5d5348">本地优先 · 不联网落库</text>
+    </g>
+  </g>
+</svg>

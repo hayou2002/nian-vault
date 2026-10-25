@@ -1,0 +1,125 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1220 496" width="1220" height="496" role="img" aria-label="念念收藏夹的预览能力：图片、PDF、Word、Excel、PPT、音频在面板内直接看；本地视频交给系统播放器">
+  <defs>
+    <linearGradient id="bg2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fdfaf6"/>
+      <stop offset="1" stop-color="#f6ede2"/>
+    </linearGradient>
+    <linearGradient id="tile2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a332c"/>
+      <stop offset="1" stop-color="#1e1a16"/>
+    </linearGradient>
+    <filter id="soft2" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="6" flood-color="#5a4632" flood-opacity="0.09"/>
+    </filter>
+  </defs>
+
+  <rect width="1220" height="496" fill="url(#bg2)"/>
+
+  <!-- 标题 -->
+  <g transform="translate(48 28)">
+    <rect x="0" y="0" width="34" height="34" rx="10" fill="url(#tile2)"/>
+    <path d="M17 12v10M12 17h10" stroke="#fdfaf6" stroke-width="1.8" stroke-linecap="round"/>
+    <text x="48" y="16" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="17" font-weight="600" fill="#2f2a24">双击就在面板里看</text>
+    <text x="48" y="34" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="11.5" fill="#8d8274">不用下载、不用切软件。下面六种在面板内直接渲染，本地视频因为沙箱限制交给系统播放器</text>
+  </g>
+
+  <g transform="translate(48 88)">
+    <!-- 行 1：图片 / PDF / Word -->
+    <g>
+      <!-- 图片 -->
+      <g transform="translate(0 0)">
+        <rect x="0" y="0" width="364" height="150" rx="14" fill="#ffffff" stroke="#e8dccc" filter="url(#soft2)"/>
+        <rect x="18" y="16" width="100" height="72" rx="8" fill="#f3ece1" stroke="#eaddcb"/>
+        <path d="M26 78l20-26 14 16 11-13 17 23z" fill="#cdb99e"/>
+        <circle cx="36" cy="34" r="7" fill="#fdfaf6"/>
+        <text x="134" y="34" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="13" font-weight="600" fill="#2f2a24">图片</text>
+        <text x="134" y="54" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#5d5348">png / jpg / gif / webp / svg</text>
+        <text x="134" y="71" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#8d8274">取字节转 blob 再显示</text>
+        <text x="134" y="88" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#8d8274">带凭据取，不会 403 裂图</text>
+        <rect x="18" y="104" width="328" height="30" rx="8" fill="#faf6ef" stroke="#efe4d4"/>
+        <text x="28" y="123" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10" fill="#8a7a66">笔记正文里的 ![](路径) 同样能显示，靠 setResolveAsset 注册解析器</text>
+      </g>
+
+      <!-- PDF -->
+      <g transform="translate(388 0)">
+        <rect x="0" y="0" width="364" height="150" rx="14" fill="#ffffff" stroke="#e8dccc" filter="url(#soft2)"/>
+        <rect x="18" y="16" width="100" height="72" rx="8" fill="#f3ece1" stroke="#eaddcb"/>
+        <rect x="34" y="26" width="68" height="52" rx="4" fill="#fff" stroke="#e0d2bd"/>
+        <path d="M42 36h52M42 44h44M42 52h52M42 60h36M42 68h48" stroke="#e8dccc" stroke-width="2.4" stroke-linecap="round"/>
+        <text x="134" y="34" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="13" font-weight="600" fill="#2f2a24">PDF</text>
+        <text x="134" y="54" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#5d5348">pdf.js 逐页画布渲染</text>
+        <text x="134" y="71" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#8d8274">不依赖浏览器内置阅读器</text>
+        <text x="134" y="88" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#8d8274">预挂 fake worker，避开 404</text>
+        <rect x="18" y="104" width="328" height="30" rx="8" fill="#faf6ef" stroke="#efe4d4"/>
+        <text x="28" y="123" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10" fill="#8a7a66">Electron 默认不开 Chromium PDF 阅读器，所以必须自己画</text>
+      </g>
+
+      <!-- Word -->
+      <g transform="translate(776 0)">
+        <rect x="0" y="0" width="348" height="150" rx="14" fill="#ffffff" stroke="#e8dccc" filter="url(#soft2)"/>
+        <rect x="18" y="16" width="100" height="72" rx="8" fill="#f3ece1" stroke="#eaddcb"/>
+        <rect x="34" y="26" width="68" height="52" rx="4" fill="#fff" stroke="#e0d2bd"/>
+        <rect x="34" y="26" width="68" height="10" rx="4" fill="#dbe8f5"/>
+        <path d="M42 46h52M42 54h44M42 62h52M42 70h36" stroke="#e8dccc" stroke-width="2.4" stroke-linecap="round"/>
+        <text x="134" y="34" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="13" font-weight="600" fill="#2f2a24">Word</text>
+        <text x="134" y="54" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#5d5348">仅 .docx，保留版式</text>
+        <text x="134" y="71" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#8d8274">页眉页脚、脚注都渲染</text>
+        <text x="134" y="88" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#8d8274">老 .doc 是二进制，不支持</text>
+        <rect x="18" y="104" width="312" height="30" rx="8" fill="#faf6ef" stroke="#efe4d4"/>
+        <text x="28" y="123" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10" fill="#8a7a66">docx-preview 纯 JS，不用 Worker 也不碰 WASM</text>
+      </g>
+    </g>
+
+    <!-- 行 2：Excel / PPT / 视频 -->
+    <g transform="translate(0 174)">
+      <!-- Excel -->
+      <g transform="translate(0 0)">
+        <rect x="0" y="0" width="364" height="150" rx="14" fill="#ffffff" stroke="#e8dccc" filter="url(#soft2)"/>
+        <rect x="18" y="16" width="100" height="72" rx="8" fill="#f3ece1" stroke="#eaddcb"/>
+        <rect x="34" y="26" width="68" height="52" rx="4" fill="#fff" stroke="#e0d2bd"/>
+        <path d="M34 40h68M34 54h68M34 68h68M58 26v52M80 26v52" stroke="#dbe8d5" stroke-width="1.6"/>
+        <text x="134" y="34" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="13" font-weight="600" fill="#2f2a24">Excel</text>
+        <text x="134" y="54" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#5d5348">xlsx / xls / csv 均可</text>
+        <text x="134" y="71" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#8d8274">后端 SheetJS 解析成行</text>
+        <text x="134" y="88" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#8d8274">前端只管画表，零依赖</text>
+        <rect x="18" y="104" width="328" height="30" rx="8" fill="#faf6ef" stroke="#efe4d4"/>
+        <text x="28" y="123" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10" fill="#8a7a66">CSP 禁 Worker/eval，前端库全被卡死，所以放 Node 侧解</text>
+      </g>
+
+      <!-- PPT -->
+      <g transform="translate(388 0)">
+        <rect x="0" y="0" width="364" height="150" rx="14" fill="#ffffff" stroke="#e8dccc" filter="url(#soft2)"/>
+        <rect x="18" y="16" width="100" height="72" rx="8" fill="#f3ece1" stroke="#eaddcb"/>
+        <rect x="30" y="30" width="76" height="44" rx="3" fill="#fff" stroke="#e0d2bd"/>
+        <rect x="38" y="38" width="34" height="5" rx="2" fill="#f0d5c4"/>
+        <path d="M38 50h60M38 58h44M38 66h52" stroke="#ece0d0" stroke-width="2" stroke-linecap="round"/>
+        <text x="134" y="34" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="13" font-weight="600" fill="#2f2a24">PowerPoint</text>
+        <text x="134" y="54" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#5d5348">pptx 逐页出图</text>
+        <text x="134" y="71" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#8d8274">后端解析每页文字与形状</text>
+        <text x="134" y="88" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#8d8274">纯图片页保真度有限</text>
+        <rect x="18" y="104" width="328" height="30" rx="8" fill="#faf6ef" stroke="#efe4d4"/>
+        <text x="28" y="123" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10" fill="#8a7a66">同样走后端解析，理由和 Excel 一致</text>
+      </g>
+
+      <!-- 视频 -->
+      <g transform="translate(776 0)">
+        <rect x="0" y="0" width="348" height="150" rx="14" fill="#ffffff" stroke="#e8dccc" filter="url(#soft2)"/>
+        <rect x="18" y="16" width="100" height="72" rx="8" fill="#f3ece1" stroke="#eaddcb"/>
+        <circle cx="68" cy="52" r="20" fill="#e8dccc"/>
+        <path d="M62 44l14 8-14 8z" fill="#8d8274"/>
+        <text x="134" y="34" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="13" font-weight="600" fill="#2f2a24">本地视频</text>
+        <text x="134" y="54" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#c0703c">交给系统播放器</text>
+        <text x="134" y="71" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#8d8274">沙箱读不到库外大文件</text>
+        <text x="134" y="88" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10.5" fill="#8d8274">RPC 单消息上限 32 MiB</text>
+        <rect x="18" y="104" width="312" height="30" rx="8" fill="#fbf1e8" stroke="#eeddc9"/>
+        <text x="28" y="123" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="10" fill="#a9702f">不是偷懒：唯一能工作的做法，双击给明确按钮</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- 底部提示 -->
+  <g transform="translate(48 428)">
+    <line x1="0" y1="0" x2="1124" y2="0" stroke="#eadfce" stroke-width="1"/>
+    <text x="0" y="26" font-family="'Segoe UI','Microsoft YaHei',system-ui" font-size="11.5" fill="#8d8274">音频（mp3 / wav / flac / m4a 等）同样在面板内播放；其余类型给「用系统应用打开」的入口，不会点了没反应</text>
+  </g>
+</svg>
