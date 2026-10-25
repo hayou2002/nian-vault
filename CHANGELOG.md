@@ -1,5 +1,38 @@
 # 念念收藏夹 - 更新日志
 
+## [0.20.0] - 2026-10-25
+
+### 视频预览下线：改由系统播放器打开
+
+本地视频内嵌预览这条路走不通，原因不在播放器本身，而在 App 的沙箱边界：
+
+- App 进程跑在 Node 权限模型下，`--permission` 只放行 `apps/` 与 `app-data/`，
+  库外的 `D:\\...` 直接 `ERR_ACCESS_DENIED`；
+- 派生子进程绕不过去——子进程继承同一套权限模型（实测 `CHILD_STAT_FAIL`）；
+- 宿主 `resources.read` 只能整读，且 RPC 单消息上限 `MAX_MESSAGE_BYTES = 32 MiB`，
+  175 MB 的视频无论怎么切都在这一步断掉；
+- 宿主自己的 `/api/resources/:id/content` 有真 Range + `createReadStream`，
+  但没有暴露给 App，用不了。
+
+所以这一版把本地视频预览**整块撤掉**，双击视频直接给「用系统播放器打开」——
+那条路一直都在，而且更快。文字、图片、音频、PDF、Word、Excel、PPT 预览不受影响。
+
+### 顺带修掉的真 bug：外部文件大小一律显示 0 B
+
+宿主 `resources.stat` 返回的是 `{ resourceKey, resource, exists, isDirectory, version, filePath }`，
+**没有 `size` 字段**。原来 `size: st.size ?? null` 于是永远拿到 `null`。
+现在按 `size → byteLength → contentLength → version.size` 逐个兜底，
+时间戳也认 `mtime / mtimeMs / version.mtimeMs` 三种写法。
+
+### 清理
+
+- 删掉 Plyr 播放器（`plyr.min.js` 110 KB + `plyr.css` 32 KB）及懒加载逻辑；
+- 删掉 Range 分块读取、`toChunkedStream`/`rawBody`、`[raw]` 诊断日志
+  （那些全是为绕开 32 MiB 上限而生的，问题既然不再走那条路，就不该留着）；
+- 删掉被右键菜单取代的旧分类改名/删除实现、Web 时代的 `collectDroppedFile`、
+  未使用的 `_sheetWarned`、纯冗余的 `RES_ICON`；
+- 绝对路径判定原本散在 5 处，抽成 `isAbsPath`（前后端各一份，语义一致）。
+
 ## [0.19.3] - 2026-10-25
 
 ### 根因：响应体作为单个超大 chunk 撞上 32MiB 硬限制

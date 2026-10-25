@@ -739,7 +739,9 @@ button.ai-pill:hover {
   vertical-align: 1px; }
 .ref-card-img { flex-direction: column; align-items: flex-start; }
 .ref-card-img .rc-cap { display: inline-flex; align-items: center; gap: 2px; }
-.rc-video { display: block; max-width: 320px; max-height: 200px; border-radius: var(--r); background: #000; }
+.rc-video-ph { display: inline-flex; align-items: center; justify-content: center;
+  width: 148px; height: 62px; border-radius: var(--r);
+  background: var(--c-soft, #f2f3f5); color: var(--c-muted); }
 .ref-card-media { align-items: flex-start; }
 .ref-card-media .rc-b { flex-direction: column; gap: 3px; }
 .rc-audio { display: block; height: 30px; max-width: 260px; margin-top: 2px; }
@@ -832,16 +834,13 @@ button.ai-pill:hover {
 .fp-img-wrap { display: flex; align-items: center; justify-content: center;
   max-height: 60vh; overflow: auto; background: var(--c-bg-sub, rgb(0 0 0 / .03)); border-radius: var(--r); }
 .fp-img { max-width: 100%; max-height: 60vh; object-fit: contain; display: block; }
-/* 视频 */
-.fp-video { width: 100%; max-height: 60vh; background: #000; border-radius: var(--r); }
-/* 本地媒体读取进度（大文件取字节时给人反馈，不是黑屏干等） */
-.fp-progress { width: 100%; max-width: 420px; margin: 10px auto 0; display: flex;
-  flex-direction: column; gap: 6px; align-items: center; }
-.fp-progress-bar { --w: 0%; width: 100%; height: 5px; border-radius: 3px;
-  background: var(--c-line, #e5e5e5); position: relative; overflow: hidden; }
-.fp-progress-bar::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0;
-  width: var(--w, 0%); background: var(--c-accent, #4a7dff); transition: width .18s ease; }
-.fp-progress-txt { font-size: 11.5px; color: var(--c-muted); }
+/* 视频：不在面板里播，给一个明确的出口 */
+.fp-video-hint { display: flex; flex-direction: column; align-items: center;
+  gap: 6px; padding: 34px 20px; text-align: center; }
+.fp-video-hint .fp-empty-ic { color: var(--c-muted); margin-bottom: 4px; }
+.fp-video-hint p { margin: 0; font-size: 13px; }
+.fp-video-hint .muted { font-size: 12px; }
+.fp-video-hint .btn { margin-top: 10px; }
 .fp-open-sys { margin-top: 8px; padding: 5px 12px; font-size: 12px; cursor: pointer;
   border: 1px solid var(--c-line); border-radius: var(--r); background: var(--c-card, #fff);
   color: var(--c-text); }
@@ -917,11 +916,13 @@ button.ai-pill:hover {
   border: 1px solid var(--c-border); border-radius: var(--r); }
 .md figure.blk-img figcaption { margin-top: 4px; font-size: 11.5px; color: var(--c-muted); }
 
-/* 视频/音频：播放器本身就是块，宽度撑满可用空间 */
+/* 音视频块：音频用播放器，视频给一个可点的占位 */
 .md figure.blk-media { margin: 10px 0; }
-.md figure.blk-media video { display: block; width: 100%; max-height: 60vh;
-  background: #000; border-radius: var(--r); }
 .md figure.blk-media audio { display: block; width: 100%; }
+.md figure.blk-video-ph { cursor: pointer; }
+.md .blk-video-ph { display: flex; align-items: center; justify-content: center; gap: 8px;
+  max-width: 320px; height: 84px; border-radius: var(--r); cursor: pointer;
+  background: var(--c-soft, #f2f3f5); color: var(--c-muted); font-size: 12.5px; }
 .md figure.blk-media figcaption { margin-top: 4px; font-size: 11.5px; color: var(--c-muted); }
 
 /* 文件（PDF / Office / 压缩包 / 其他）：一条能点的行，不是一行死字 */

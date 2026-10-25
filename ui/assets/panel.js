@@ -87,277 +87,60 @@ async function assetBlobUrl(rel) {
   return task;
 }
 
-// 统一的媒体字节入口：库内相对路径走 /_assets/；库外绝对路径走 /external/raw。
-// 不能全塞给 assetBlobUrl——它拼 /_assets/D:\... 时 SDK 见反斜杠直接抛
-// Invalid plugin API path（外部视频「媒体加载失败」的根因）。
-const _mediaBlobCache = new Map();    // fp -> blobUrl（完成后常驻）
-const _mediaBlobPending = new Map(); // fp -> Promise（进行中去重）
-
-// 按扩展名猜 MIME：blob 没有正确的 type 时，部分容器（mkv/avi）播放器会拒绝解码。
-function guessMediaType(fp) {
-  const ext = String(fp).split(".").pop().toLowerCase();
-  return {
-    mp4: "video/mp4", m4v: "video/mp4", webm: "video/webm", ogv: "video/ogg",
-    mov: "video/quicktime", mkv: "video/x-matroska", avi: "video/x-msvideo",
-    mp3: "audio/mpeg", m4a: "audio/mp4", aac: "audio/aac", wav: "audio/wav",
-    ogg: "audio/ogg", oga: "audio/ogg", flac: "audio/flac", opus: "audio/opus",
-  }[ext] || "";
-}
-
-// 直连 URL：交给 <video src> 自己流式拉取，App 内存里只留一个字符串。
+// 音频取字节 → blob URL。
 //
-// 两个关键点，缺一不可：
-//   ① 路径走 routes/  —— ui/ 是静态文件服务，只返回 ui 目录里真实存在的文件，
-//      external/raw 是后端动态路由，挂在 routes/ 前缀下。
-//   ② token 从 location.search 取 —— 这是 SDK 的权威来源：
-//      readSurfaceSession(w) = new URLSearchParams(w.location.search).get("appSurfaceSession")
-//      pluginApiFetch 就是用它塞 X-Hana-App-Surface-Session 头的。
-//      图片/PDF/docx 全部正常，正因为它们走 hana.api.fetch 拿这个 token。
-function mediaSrcUrl(fp) {
+// 为什么不能直接给 <audio src="绝对地址">：宿主所有路由都要求 surface session
+// 凭据，而媒体标签发请求带不了自定义头 → 必然 403。hana.api.fetch 会自动附上
+// 凭据，取回二进制后转 blob: 交给标签。
+const _audioBlobCache = new Map();
+const _audioBlobPending = new Map();
+async function audioBlobUrl(fp) {
   const s = String(fp || "");
   if (!s) return "";
-  const isAbs = /^([A-Za-z]:[\\/]|\/)/.test(s);
-  const rel = isAbs
-    ? `external/raw?path=${encodeURIComponent(s)}`
-    : `_assets/${s.replace(/^[._]*assets[/_]/, "")}`;
-
-  const appId = (/\/api\/apps\/([^/]+)\//.exec(location.pathname) || [])[1];
-  const token = new URLSearchParams(location.search).get("appSurfaceSession") || "";
-
-  if (!appId) {
-    const base = location.origin + location.pathname.replace(/[^/]*$/, "");
-    return new URL(rel, base).href;
-  }
-  const sep = rel.includes("?") ? "&" : "?";
-  const auth = token ? `${sep}appSurfaceSession=${encodeURIComponent(token)}` : "";
-  return `${location.origin}/api/apps/${appId}/routes/${rel}${auth}`;
-}
-
-// 读取失败的真实原因，界面直接展示这条（不要把诊断信息藏在 console 里）。
-const _mediaErr = new Map(); // fp -> 人类可读的错误描述
-
-// 读一个媒体文件的字节并变成 blob URL。
-// onProgress(received, total)：total 为 0 表示不知道总大小。
-//
-// 大文件走分块 Range（每段 4MB）：服务端支持 206，分块既能有准确进度，
-// 也能绕开「一次性返回超大响应体」这类未知限制。
-async function mediaBlobUrl(fp, onProgress) {
-  const s = String(fp || "");
-  if (!s) return "";
-  if (_mediaBlobCache.has(s)) {
-    const hit = _mediaBlobCache.get(s);
-    onProgress?.(1, 1);
-    return hit;
-  }
-  if (_mediaBlobPending.has(s)) return _mediaBlobPending.get(s);
-  const isAbs = /^([A-Za-z]:[\\/]|\/)/.test(s);
+  if (_audioBlobCache.has(s)) return _audioBlobCache.get(s);
+  if (_audioBlobPending.has(s)) return _audioBlobPending.get(s);
+  const isAbs = isAbsPath(s);
   const url = isAbs
     ? `/external/raw?path=${encodeURIComponent(s)}`
     : `/_assets/${s.replace(/^[._]*assets[/_]/, "")}`;
-
   const task = (async () => {
-    _mediaErr.delete(s);
     try {
-      // 关键：不带任何自定义 header（包括 Range）。
-      // 这条通道和图片/PDF/docx 完全一致——它们都正常，说明这条路能过宿主。
       const res = await hana.api.fetch(url);
-      if (!res || !res.ok) {
-        // 关键：后端 wrap() 把异常原因写在 body 的 error 字段里。
-        // 只报状态码等于把诊断信息丢掉，这里必须读出来。
-        let detail = "";
-        try {
-          const t = await res.text();
-          try { detail = JSON.parse(t)?.error || t.slice(0, 300); }
-          catch { detail = t.slice(0, 300); }
-        } catch { /* 读不出就算了 */ }
-        throw new Error(`HTTP ${res.status}${detail ? " · " + detail : ""}`);
-      }
-
-      const total = Number(res.headers.get("content-length")) || 0;
-      let blob;
-      if (res.body && typeof res.body.getReader === "function") {
-        const reader = res.body.getReader();
-        const chunks = [];
-        let received = 0;
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          chunks.push(value);
-          received += value.byteLength;
-          onProgress?.(received, total);
-        }
-        blob = new Blob(chunks, { type: guessMediaType(s) || "application/octet-stream" });
-      } else {
-        blob = await res.blob();
-        onProgress?.(blob.size, blob.size);
-      }
-      const burl = URL.createObjectURL(blob);
-      _mediaBlobCache.set(s, burl);
+      if (!res || !res.ok) throw new Error(`HTTP ${res.status}`);
+      const burl = URL.createObjectURL(await res.blob());
+      _audioBlobCache.set(s, burl);
       return burl;
     } catch (err) {
-      _mediaErr.set(s, String(err?.message || err));
-      console.warn("[nian-vault] 媒体读取失败：", s, err);
+      console.warn("[nian-vault] 音频读取失败：", s, err?.message || err);
       return "";
     } finally {
-      _mediaBlobPending.delete(s);
+      _audioBlobPending.delete(s);
     }
   })();
-  _mediaBlobPending.set(s, task);
+  _audioBlobPending.set(s, task);
   return task;
 }
 
-// 取某次失败的详细原因（界面用）
-function mediaErrorOf(fp) {
-  return _mediaErr.get(String(fp || "")) || "";
-}
-
-// 在线地址（http/https）直接交给浏览器：那才是真正的网络流。
-function isOnlineUrl(s) {
-  return /^https?:\/\//i.test(String(s || ""));
-}
-
-// Plyr 懒加载：播放器控件层（倍速、画中画、音量、全屏）。
-// 加载失败就退回原生 <video>，不阻断播放。
-let _plyrPromise = null;
-function loadPlyr() {
-  if (_plyrPromise) return _plyrPromise;
-  _plyrPromise = (async () => {
-    try {
-      await ensureCss("./vendor/plyr.css");
-      const mod = await import("./vendor/plyr.min.js");
-      return mod?.default || globalThis.Plyr || null;
-    } catch (e) {
-      console.warn("[nian-vault] Plyr 加载失败，退回原生播放器：", e?.message || e);
-      return null;
-    }
-  })();
-  return _plyrPromise;
-}
-
-// 按需插一份样式表（CSP 允许 'self'）
-const _cssLoaded = new Set();
-function ensureCss(href) {
-  if (_cssLoaded.has(href)) return Promise.resolve();
-  return new Promise((res) => {
-    const l = document.createElement("link");
-    l.rel = "stylesheet";
-    l.href = href;
-    l.onload = () => { _cssLoaded.add(href); res(); };
-    l.onerror = () => { _cssLoaded.add(href); res(); };
-    document.head.appendChild(l);
-  });
-}
-
-// 用 Plyr 包装一个已就绪的 <video>；失败返回 null（调用方继续用原生）
-async function mountPlyr(el) {
-  try {
-    const Plyr = await loadPlyr();
-    if (!Plyr) return null;
-    const p = new Plyr(el, {
-      controls: ["play-large", "play", "progress", "current-time", "duration",
-                 "mute", "volume", "settings", "pip", "fullscreen"],
-      settings: ["speed"],
-      speed: { selected: 1, options: [0.75, 1, 1.25, 1.5, 1.75, 2] },
-      keyboard: { focused: true, global: false },
-      tooltips: { controls: true, seek: true },
-      i18n: { speed: "速度", normal: "正常", quality: "画质", mute: "静音", unmute: "取消静音" },
-    });
-    return p;
-  } catch (e) {
-    console.warn("[nian-vault] Plyr 挂载失败：", e?.message || e);
-    return null;
-  }
-}
-
-// 音视频填充：直连流式播放（App 内存里只占一个 URL 字符串）。
-//
-// <video src="..."> 是浏览器原生流式能力：按需 Range 拉段、边下边播，
-// 不需要 App 先把整个文件读进内存再喂过去。175MB 也只是个 URL 而已。
-//
-// 失败时按文件大小分流兜底：
-//   ≤64MB → 取字节走 blob（已验证通道）
-//   >64MB → 不硬撑，直接给系统播放器入口
-async function paintMedia(root) {
+// 音频填充：取字节 → blob URL。视频不走这里（见 previewAsset 的说明）。
+async function paintAudio(root) {
   const box = root || document;
-  const els = [...box.querySelectorAll("video[data-vsrc], audio[data-vsrc]")];
+  const els = [...box.querySelectorAll("audio[data-audio-src]")];
   await Promise.all(els.map(async (el) => {
-    const fp = el.dataset.vsrc;
-    el.removeAttribute("data-vsrc");
+    const fp = el.dataset.audioSrc;
+    el.removeAttribute("data-audio-src");
     if (!fp) return;
-
-    const wrap = el.closest(".fp-audio, .preview-body") || el.parentElement;
-    const name = String(fp).split(/[\\/]/).pop();
-    const isVideo = el.tagName.toLowerCase() === "video";
-
-    // 控件层等元数据就绪后再接管，别干扰加载
-    if (isVideo) {
-      el.addEventListener("loadedmetadata", () => { mountPlyr(el); }, { once: true });
-    }
-
-    // 在线地址：直接给，浏览器原生流最合适
-    if (isOnlineUrl(fp)) {
-      el.src = fp;
-      el.addEventListener("error", () => {
-        const kinds = { 1: "加载被中止", 2: "网络错误", 3: "解码失败", 4: "格式不支持" };
-        showMediaError(wrap, el, name, kinds[el.error?.code] || "未知", fp);
-      }, { once: true });
-      return;
-    }
-
-    // 本地文件：直连（流式）；失败则取字节兜底
-    const src = mediaSrcUrl(fp);
-    let stage = "direct";
-    el.addEventListener("error", async () => {
-      const code = el.error?.code ?? "?";
-      const kinds = { 1: "加载被中止", 2: "取字节失败", 3: "解码失败", 4: "来源不支持" };
-
-      if (stage === "direct") {
-        stage = "blob";
-        const bar = document.createElement("div");
-        bar.className = "fp-progress";
-        bar.innerHTML = `<div class="fp-progress-bar"></div><span class="fp-progress-txt">读取中…</span>`;
-        wrap?.appendChild(bar);
-        const fill = bar.querySelector(".fp-progress-bar");
-        const txt = bar.querySelector(".fp-progress-txt");
-        const blobUrl = await mediaBlobUrl(fp, (got, total) => {
-          if (total > 0) {
-            const pct = Math.min(100, Math.round((got / total) * 100));
-            fill.style.setProperty("--w", pct + "%");
-            txt.textContent = `读取中 ${pct}%（${fmtSize(got)} / ${fmtSize(total)}）`;
-          } else txt.textContent = `读取中 ${fmtSize(got)}`;
-        });
-        bar.remove();
-        if (blobUrl) {
-          el.addEventListener("loadedmetadata", () => { if (isVideo) mountPlyr(el); }, { once: true });
-          el.src = blobUrl;
-          el.load();
-          return;
-        }
-      }
-
-      const why = mediaErrorOf(fp);
-      showMediaError(wrap, el, name,
-        `${kinds[code] || "未知"}（错误码 ${code}）${why ? "\n" + why : ""}`, fp);
-    });
-    el.src = src;
+    const burl = await audioBlobUrl(fp);
+    if (burl) { el.src = burl; return; }
+    // 取不到就把原因摆出来，别留一个点了没反应的空播放器
+    const wrap = el.closest(".fp-audio") || el.parentElement;
+    if (!wrap) return;
+    wrap.insertAdjacentHTML("beforeend",
+      `<div class="fp-err">❌ 这个音频读不出来。` +
+      `<br><button class="btn fp-open-sys" data-open-sys="${escapeAttr(fp)}">用系统播放器打开</button></div>`);
+    wrap.querySelector(".fp-open-sys[data-open-sys]")
+      ?.addEventListener("click", () => openWithSystem(fp), { once: true });
   }));
 }
-
-// 统一失败面：说清是哪一步出的问题，并给出「用系统播放器打开」这条路。
-// reason 里会带上后端返回的 error / where，方便定位到底哪一行抛的。
-function showMediaError(wrap, el, name, reason, fp) {
-  if (!wrap) return;
-  if (wrap.querySelector(".fp-open-sys[data-open-sys]")) return; // 不重复插
-  wrap.insertAdjacentHTML("beforeend",
-    `<div class="fp-err">❌ 无法播放 ${escapeHtml(name)}` +
-    `<br><span class="muted" style="white-space:pre-wrap;word-break:break-all">${escapeHtml(reason)}</span>` +
-    `<br><button class="btn fp-open-sys" data-open-sys="${escapeAttr(fp)}">用系统播放器打开</button>` +
-    `</div>`);
-  const btn = wrap.querySelector(".fp-open-sys[data-open-sys]");
-  btn?.addEventListener("click", () => openWithSystem(fp), { once: true });
-}
-
-// 扫一遍容器里所有 data-asset 的 <img>
 
 // 扫一遍容器里所有 data-asset 的 <img>，把 blob URL 填进去。
 // 之所以不直接在 innerHTML 里写 src：blob 是异步拿的，没法同步生成。
@@ -531,38 +314,6 @@ async function loadCategories() {
 // 资源索引在 loadCategories 里刷：![[名]] 卡片要靠它查文件在不在。
 // 失败不影响主流程（卡片会显示"文件不存在"，但不该让面板白屏）。
 // 不要放模块顶层——那时 surface 还没就绪，请求必失败。
-
-function renameCategory(from) {
-  const cur = state.categories.find((c) => c.name === from);
-  dialog({
-    title: `修改分类「${from}」`,
-    bodyHtml: `<input id="d-name" value="${escapeAttr(from)}"${from === "收件箱" ? " disabled" : ""}><input id="d-desc" placeholder="说明" value="${escapeAttr(cur?.description || "")}">`,
-    onMount: () => $("d-name").focus(),
-    onOk: async () => {
-      const r = await API.post("/categories/rename", { from, to: $("d-name").value.trim() || from, description: $("d-desc").value.trim() });
-      if (!r.ok) { toast(`❌ ${r.error}`); return false; }
-      await loadCategories();
-      await selectCategory(r.name);
-      toast("✓ 已保存");
-    },
-  });
-}
-
-function deleteCategory(name) {
-  const n = state.categories.find((c) => c.name === name)?.count || 0;
-  dialog({
-    title: "删除分类",
-    bodyHtml: `<p>删除「${escapeHtml(name)}」后，里面 ${n} 条内容会移到「收件箱」，不会被删掉。</p>`,
-    okText: "删除",
-    onOk: async () => {
-      const r = await API.post("/categories/delete", { name });
-      if (!r.ok) { toast(`❌ ${r.error}`); return false; }
-      await loadCategories();
-      await selectCategory("");
-      toast(`✓ 已删除，${r.movedToInbox} 条移到收件箱`);
-    },
-  });
-}
 
 // 树的数据：/home 返回每个分类下的条目（带 parent/order）。
 // 只取当前分类那棵，渲染成可展开的层级。
@@ -787,15 +538,18 @@ async function refreshTree() {
   if (r.ok) state.tree = r.tree || [];
 }
 
-// 选中某个分类时，行尾浮出改名/删除；没选中就收起
-
-
+// HTML / 属性转义：所有拼字符串进 innerHTML 的地方都必须过一遍
 function escapeHtml(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 function escapeAttr(s) {
   return escapeHtml(s).replace(/"/g, "&quot;");
 }
+
+// 是不是本机绝对路径（Windows 盘符 或 POSIX 根）。
+// 抽出来是因为它原本散在 4 处，各写一份迟早会分叉——
+// 之前 /external/raw 的 403 就有「一条路认、一条路不认」的成分。
+const isAbsPath = (v) => /^([A-Za-z]:[\\/]|\/)/.test(String(v || ""));
 
 async function selectCategory(name) {
   state.filter.category = name || "";
@@ -944,7 +698,7 @@ async function selectEntry(id) {
     const codeEls = $("v-body").querySelectorAll("code");
     for (const c of codeEls) {
       const txt = c.textContent;
-      if ((/^[A-Za-z]:[\\/]/.test(txt) || txt.startsWith("/")) && txt.length > 4) {
+      if (isAbsPath(txt) && txt.length > 4) {
         const btn = document.createElement("button");
         btn.className = "link-btn";
         btn.textContent = "复制路径";
@@ -2209,27 +1963,35 @@ $("btn-wall-inbox-clear").addEventListener("click", inboxClear);
 // 资源不复制进库，只存 meta.ref 指向原件。
 // 三类入口：拖拽到面板、对话框选路径、粘贴网址。
 
-// 把拖进来的 File 收录成一条收藏。
-// 注意：浏览器给的 File 拿不到真实磁盘路径，所以这里存的是「文件名 + 大小 + mime」，
-// 用户之后要用系统应用打开时，走的是 hana.resources.pick 重新定位——
-// 这是 Web 环境的硬限制，不是我们偷懒。
-async function collectDroppedFile(file) {
-  const ext = (file.name.match(/\.(\w{1,8})$/) || [])[1] || "";
-  const type = typeOfExt(ext);
-  const r = await API.post("/ref/collect", {
-    target: file.name,
-    type,
-    title: file.name,
-    category: state.filter.category || "",
-    content: "",
-  });
-  if (!r.ok) { toast(`❌ ${file.name}：${r.error}`); return null; }
-  // 补上浏览器能拿到的元信息
-  await API.post("/entry", {
-    id: r.entry.id,
-    ref: { kind: "path", target: file.name, size: file.size, mime: file.type || null },
-  });
-  return r.entry;
+function refBadge(e) {
+  const ref = e.ref;
+  if (!ref) return "";
+  // 引用网页：显示域名，前面标「网页」
+  if (ref.kind === "url") return `🔗 网页 · ${ref.host || ""}`;
+  // 本机引用：重点标出来"只是记着位置，没搬进库"
+  if (ref.kind === "path") {
+    if (ref.missing) return "⚠ 原件已失效（可能被移动或删除）";
+    const bits = [];
+    bits.push("🔗 本机引用");
+    if (e.type === "folder" && ref.children) {
+      bits.push(`${ref.children.count} 项`);
+      if (ref.children.size) bits.push(fmtSize(ref.children.size));
+    } else if (ref.size != null) bits.push(fmtSize(ref.size));
+    return bits.join(" · ");
+  }
+  // kind 只可能是 path 或 url，走到这里说明数据形状意外，不硬编
+  return "";
+}
+
+
+function fmtSize(n) {
+  // null/undefined 是"未知大小"（外部文件 stat 失败时），不是 0 字节
+  if (n === null || n === undefined || n === "") return "—";
+  const b = Number(n) || 0;
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)} KB`;
+  if (b < 1024 * 1024 * 1024) return `${(b / 1024 / 1024).toFixed(1)} MB`;
+  return `${(b / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
 // 用宿主的选择器选文件/文件夹，收录进去
@@ -2419,7 +2181,7 @@ function renderRefView(e) {
       body = `<div class="ref-empty">${icon("image", 22)}<p>浏览器里读不到本地图片文件，点下面的按钮用系统应用打开。</p></div>`;
     }
   } else if (e.type === "video" || e.type === "audio") {
-    body = `<div class="ref-empty">${icon(TYPE_ICONS[e.type] || "file", 22)}<p>${TYPE_LABEL[e.type] || "媒体"}文件在本地，${ref.size != null ? `大小 ${fmtSize(ref.size)}` : "大小未知"}。</p><p class="muted">iframe 里播放不了本地媒体文件，点下面的按钮用系统播放器打开。</p></div>`;
+    body = `<div class="ref-empty">${icon(TYPE_ICONS[e.type] || "file", 22)}<p>${TYPE_LABEL[e.type] || "媒体"}文件在本地，${ref.size != null ? `大小 ${fmtSize(ref.size)}` : "大小未知"}。</p><p class="muted">点下面的按钮用系统播放器打开。</p></div>`;
   } else if (e.type === "folder") {
     const c = ref.children || { count: 0, size: 0, byType: {}, children: [] };
     const dist = Object.entries(c.byType || {}).sort((a, b) => b[1] - a[1])
@@ -3242,7 +3004,7 @@ async function loadPdf(scope, fp) {
       _pdfjsMod.GlobalWorkerOptions.workerSrc =
         new URL("./vendor/pdf.worker.min.mjs", import.meta.url).href;
     }
-    const isAbs = /^([A-Za-z]:[\\/]|\/)/.test(String(fp));
+    const isAbs = isAbsPath(fp);
     const url = isAbs
       ? `/external/raw?path=${encodeURIComponent(fp)}`
       : `/_assets/${String(fp).replace(/^_assets\//, "")}`;
@@ -3303,7 +3065,9 @@ async function loadPdf(scope, fp) {
 function canPreviewInline(fp, meta) {
   const name = String(fp).split(/[\\/]/).pop();
   const type = meta?.type || guessTypeOf(name);
-  if (["image", "video", "audio", "pdf", "text", "md", "doc", "sheet", "slide"].includes(type)) {
+  // 视频不在这里：App 进程读不到库外大文件（权限模型 + RPC 32MiB 限制），
+  // 与其点开黑屏，不如一开始就走「用系统播放器打开」。
+  if (["image", "audio", "pdf", "text", "md", "doc", "sheet", "slide"].includes(type)) {
     // 老 .doc / .ppt 是二进制格式，docx-preview 读不了（.xls 后端 SheetJS 能读，放行）
     if (type === "doc" && !/\.docx$/i.test(name)) return false;
     return true;
@@ -3326,12 +3090,17 @@ async function previewAsset(fp, meta) {
   if (type === "image") {
     body = `<div class="fp-img-wrap"><img class="fp-img" data-asset="${escapeAttr(fp)}" alt="${escapeAttr(name)}"></div>`;
   } else if (type === "video") {
-    // 音视频和图片同理：标签带不了凭据头，绝对 URL 直连必 403。
-    // 用 data-vsrc 标记，预览框挂载后异步填 blob URL（见 paintMedia）。
-    body = `<video class="fp-video" data-vsrc="${escapeAttr(fp)}" data-vsize="${escapeAttr(String(meta?.size ?? ""))}" controls preload="metadata"></video>`;
+    // 视频一律交给系统播放器：App 沙箱读不到库外大文件，内嵌播放必然失败。
+    // 与其给一个点了就黑屏的播放器，不如把这条路说清楚。
+    body = `<div class="fp-empty fp-video-hint">` +
+      `<div class="fp-empty-ic">${icon("video", 40)}</div>` +
+      `<p>视频用系统播放器观看更流畅。</p>` +
+      `<p class="muted">${size ? `大小 ${escapeHtml(size)} · ` : ""}双击下方按钮直接打开原文件。</p>` +
+      `<button class="btn primary" data-open-media="${escapeAttr(fp)}">▶ 用系统播放器打开</button>` +
+      `</div>`;
   } else if (type === "audio") {
     body = `<div class="fp-audio"><div class="fp-audio-ic">${icon("audio", 40)}</div>` +
-      `<audio data-vsrc="${escapeAttr(fp)}" controls preload="metadata"></audio></div>`;
+      `<audio data-audio-src="${escapeAttr(fp)}" controls preload="metadata"></audio></div>`;
   } else if (type === "text" || type === "md" || /\.(md|txt|markdown|json|csv|log|js|mjs|css|html)$/i.test(name)) {
     // 文本类：拉回来渲染。md 用 renderMarkdown（含 ![[资源]] 卡片），纯文本 <pre>
     body = `<div class="fp-text" id="pv-text"><div class="muted fp-loading">正在读取…</div></div>`;
@@ -3380,7 +3149,10 @@ async function previewAsset(fp, meta) {
   ov.addEventListener('click', (ev) => { if (ev.target === ov) closePreview(); });
   document.addEventListener('keydown', onEsc);
   paintAssetImages(ov);
-  paintMedia(ov);
+  paintAudio(ov);
+  ov.querySelectorAll("[data-open-media]").forEach((btn) => {
+    btn.addEventListener("click", () => openWithSystem(btn.dataset.openMedia), { once: true });
+  });
   {
       const box = $("pv-text");
       if (box) {
@@ -3416,7 +3188,6 @@ async function previewAsset(fp, meta) {
 
 // Excel 预览：后端 /sheet/preview 返回 { sheets: [{name, rows}] }，前端画表。
 // 库内库外统一传原始路径，后端 readPreviewBytes 自己分辨。
-let _sheetWarned = false;
 async function renderSheet(scope, fp) {
   const box = scope.querySelector("#pv-sheet");
   if (!box) return;
@@ -3503,7 +3274,7 @@ async function renderDocx(scope, fp) {
     // 库内走 /asset/*（库内 fs）；库外走 /external/raw（宿主资源接口）。
     // 注意 fetch 必须传相对路径：assetUrl() 返回绝对 URL，SDK 的
     // normalizePluginApiPath 见到 http: 协议头直接抛 Invalid plugin API path。
-    const isAbs = /^([A-Za-z]:[\\/]|\/)/.test(fp);
+    const isAbs = isAbsPath(fp);
     const url = isAbs
       ? `/external/raw?path=${encodeURIComponent(fp)}`
       : `/_assets/${String(fp).replace(/^[._]*assets[/_]/, "")}`;
@@ -3901,8 +3672,9 @@ window.__refBlock = (path, alt) => {
       `<figcaption>${escapeHtml(label)} · ${escapeHtml(size)}</figcaption></figure>`;
   }
   if (f.type === "video") {
-    return `<figure class="blk blk-media" data-ref-card="${escapeAttr(f.path)}">` +
-      `<video src="${escapeAttr(url)}" controls preload="metadata"></video>` +
+    // 正文里的视频卡片：不内嵌播放器，点卡片用系统播放器打开
+    return `<figure class="blk blk-media blk-video" data-ref-card="${escapeAttr(f.path)}">` +
+      `<div class="blk-video-ph">${icon("video", 28)}<span>▶ 用系统播放器打开</span></div>` +
       `<figcaption>${escapeHtml(label)} · 视频 · ${escapeHtml(size)}</figcaption></figure>`;
   }
   if (f.type === "audio") {
@@ -3945,10 +3717,10 @@ window.__refCard = (name, alias) => {
       `<span class="rc-cap"><b class="rc-badge">图片</b> ${escapeHtml(label)} · ${escapeHtml(fmtSize(f.size))}</span></span>`;
   }
 
-  // 视频/音频：给原生播放器，不用另外打开
+  // 音频给原生播放器；视频只给卡片（点了走系统播放器）
   if (f.type === "video") {
     return `<span class="ref-card ref-card-media" data-tint="${tint}" data-ref-card="${escapeAttr(f.path)}">` +
-      `<video class="rc-video" src="${escapeAttr(url)}" controls preload="metadata"></video>` +
+      `<span class="rc-video-ph">${icon("video", 22)}</span>` +
       `<span class="rc-b"><span class="rc-t">${escapeHtml(label)}</span>` +
       `<span class="rc-m"><b class="rc-badge">视频</b> ${escapeHtml(fmtSize(f.size))}</span></span></span>`;
   }
