@@ -1025,3 +1025,11 @@ button.ai-pill:hover {
 .fp-docx section.nv-docx img { max-width: 100%; height: auto; }
 /* 内部滚动条细一点，别抢纸的注意力 */
 .fp-docx::-webkit-scrollbar { width: 8px; height: 8px; }
+
+/* ===== PDF 预览（pdf.js canvas） ===== */
+.fp-pdf-wrap { display: flex; flex-direction: column; gap: 8px; }
+.fp-pdf-bar { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.fp-pdf-canvas { max-height: 62vh; overflow: auto; background: #f2eee6;
+  border-radius: var(--r); padding: 12px; display: flex; justify-content: center; }
+.fp-pdf-canvas canvas { background: #fff; box-shadow: 0 1px 4px rgb(0 0 0 / .14);
+  max-width: 100%; height: auto; display: block; }

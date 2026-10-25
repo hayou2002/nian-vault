@@ -2946,23 +2946,71 @@ async function deleteAssetFlow(fp, isDir) {
   await loadCategories();
 }
 
-// PDF：拿字节转 blob 再塞 iframe。
-// 直接用 iframe src 会 403——宿主路由要凭据，iframe 带不了请求头。
+// PDF：pdf.js 画到 canvas。
+// iframe 这条路在 HanaAgent(Electron) 里是死的：宿主没开 PDF 插件
+// （主进程 webPreferences 里没有 plugins:true），blob/http 全都白屏。
+// pdf.js 在禁 Worker 的 CSP 下走 fake worker（主线程），legacy build 就是为这种环境准备的。
+let _pdfjsMod = null;
 async function loadPdf(scope, fp) {
   const wrap = scope.querySelector(".fp-pdf-wrap");
   if (!wrap) return;
   try {
+    if (!_pdfjsMod) {
+      _pdfjsMod = await import("./vendor/pdf.min.mjs");
+      // 指向包内 worker 模块：pdf.js 禁 Worker 时用 await import(workerSrc)
+      // 把它拉进主线程跑。必须指向同源文件，不能是 CDN。
+      _pdfjsMod.GlobalWorkerOptions.workerSrc = "./vendor/pdf.worker.min.mjs";
+    }
     const isAbs = /^([A-Za-z]:[\\/]|\/)/.test(String(fp));
     const url = isAbs
       ? `/external/raw?path=${encodeURIComponent(fp)}`
       : `/_assets/${String(fp).replace(/^_assets\//, "")}`;
     const resp = await hana.api.fetch(url);
     if (!resp || !resp.ok) throw new Error(`HTTP ${resp ? resp.status : "无响应"}`);
-    const blob = await resp.blob();
-    // 明确指定 MIME，避免宿主给的 content-type 不被 iframe 认
-    const pdfBlob = blob.type === "application/pdf" ? blob : new Blob([blob], { type: "application/pdf" });
-    const blobUrl = URL.createObjectURL(pdfBlob);
-    wrap.innerHTML = `<iframe class="fp-pdf" src="${blobUrl}" title="PDF"></iframe>`;
+    const data = new Uint8Array(await resp.arrayBuffer());
+    if (!data.length) throw new Error("取回 0 字节");
+
+    const doc = await _pdfjsMod.getDocument({
+      data,
+      isEvalSupported: false,      // CSP 无 unsafe-eval，走替代路径
+      isOffscreenCanvasSupported: false,
+    }).promise;
+
+    // 界面：页码条 + 画布容器
+    wrap.innerHTML =
+      '<div class="fp-pdf-bar"><button type="button" class="small" id="pv-pdf-prev">‹ 上一页</button>' +
+      '<span id="pv-pdf-pn" class="muted"></span>' +
+      '<button type="button" class="small" id="pv-pdf-next">下一页 ›</button></div>' +
+      '<div class="fp-pdf-canvas" id="pv-pdf-canvas"></div>';
+
+    const canvasBox = wrap.querySelector("#pv-pdf-canvas");
+    const pnEl = wrap.querySelector("#pv-pdf-pn");
+    let cur = 1;
+    const scale = 1.35;
+
+    const renderPage = async () => {
+      const page = await doc.getPage(cur);
+      const viewport = page.getViewport({ scale });
+      const canvas = document.createElement("canvas");
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      canvasBox.innerHTML = "";
+      canvasBox.appendChild(canvas);
+      pnEl.textContent = ` ${cur} / ${doc.numPages} `;
+      await page.render({
+        canvasContext: canvas.getContext("2d"),
+        viewport,
+      }).promise;
+    };
+
+    wrap.querySelector("#pv-pdf-prev").addEventListener("click", async () => {
+      if (cur > 1) { cur--; await renderPage(); }
+    });
+    wrap.querySelector("#pv-pdf-next").addEventListener("click", async () => {
+      if (cur < doc.numPages) { cur++; await renderPage(); }
+    });
+
+    await renderPage();
   } catch (err) {
     wrap.innerHTML =
       `<div class="fp-err">❌ PDF 打不开：${escapeHtml(err?.message || String(err))}` +
@@ -3088,17 +3136,19 @@ async function renderDocx(scope, fp) {
   }
   try {
     if (!_docxMod) {
-      _docxMod = await import("./vendor/docx-preview.mjs");
-      if (!window.JSZip) {
-        // jszip 是 UMD，用动态 script 兜底（panel.html 里没引也能工作）
+      // 顺序不能反：docx-preview.mjs 在模块顶层就读 globalThis.JSZip，
+      // 而且模块求值失败会被浏览器缓存成永久失败，之后 import 永远抛同一个错。
+      // 必须先把 jszip 挂上去，再第一次 import。
+      if (!globalThis.JSZip) {
         await new Promise((res, rej) => {
           const s = document.createElement("script");
           s.src = "./assets/vendor/jszip.min.js";
           s.onload = res;
-          s.onerror = () => rej(new Error("jszip 加载失败"));
+          s.onerror = () => rej(new Error("jszip.min.js 加载失败"));
           document.head.appendChild(s);
         });
       }
+      _docxMod = await import("./vendor/docx-preview.mjs");
     }
     // 库内走 /asset/*（库内 fs）；库外走 /external/raw（宿主资源接口）
     const isAbs = /^([A-Za-z]:[\\/]|\/)/.test(fp);

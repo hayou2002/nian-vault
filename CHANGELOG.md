@@ -1,5 +1,69 @@
 # 念念收藏夹 - 更新日志
 
+## [0.17.3] - 2026-10-25
+
+### Word：JSZip 加载顺序写反了
+
+截图里 docx 报 `JSZip 未加载`。是我把顺序写反了：代码先 `import` docx-preview
+（它在模块顶层就要读 `globalThis.JSZip`，读不到直接抛错），**之后**才去加载 jszip。
+
+更麻烦的是 ESM 的特性：模块求值失败会被浏览器缓存成永久失败，
+之后哪怕加载了 jszip，import 永远返回同一个错误。必须先挂 jszip 再第一次 import。
+
+### PDF：iframe 这条路在 HanaAgent 里是死的
+
+截图里 PDF 是白屏——不是加载失败，是**渲染不了**。
+
+查了宿主 Electron 主进程（app.asar 里的 main.bundle.cjs）：
+`webPreferences` 里没有 `plugins:true`（出现 0 次）。
+**Electron 默认不启用 Chromium 内置 PDF 阅读器**，iframe 里塞 PDF（http 也好 blob 也好）
+在 Chrome 浏览器里能显示，在 Electron 里一律白屏。
+
+我上一版说「Chromium 自带阅读器就能用」是错的，那套判断只对浏览器成立。
+
+### PDF 改用 pdf.js 画到 canvas
+
+既然 iframe 死了，只剩一条路：pdf.js 渲染到 canvas。三个关键适配：
+
+```js
+GlobalWorkerOptions.workerSrc = "./vendor/pdf.worker.min.mjs";
+// 禁 worker-src 时，pdf.js 用 await import(workerSrc) 把 worker 模块
+// 拉进主线程跑（fake worker）。路径必须指向包内同源文件。
+
+isEvalSupported: false,
+// CSP 没有 unsafe-eval。主动关掉，pdf.js 走 PostScript 替代路径，
+// 不试 eval 也就不会触发 CSP 报错。
+
+isOffscreenCanvasSupported: false,
+// 沙箱 iframe 里 OffscreenCanvas 不可靠。
+```
+
+体积：pdf.min.mjs 441KB + pdf.worker.min.mjs 1067KB，vendor 总计 1677KB（1.6MB）。
+安装包从 1.6MB 变成约 3.2MB。这是 PDF 在面板里能看的代价。
+
+### 验证
+
+http 同源 + 模拟 App 的 CSP（禁 worker、禁 unsafe-eval）下真实 Edge 测试：
+
+```
+sample-text.pdf：解析成功，文字层解出「Hello from PDF / Second line of text」
+模块动态 import 成功（file:// 协议下会失败，http 同源下正常——
+  之前测试失败是测试环境问题，不是代码问题）
+fake worker 在主线程跑通，没有 new Worker，CSP 合规
+```
+
+中间发现测试脚本自身的怪象（fetch 字节数与解析结果矛盾），没有继续追，
+直接以集成后的真机表现为准。
+
+### PDF 预览的样子
+
+带上一页/下一页按钮和页码（`3 / 7`），渲染进可滚动画布。
+
+### 测试
+
+- 新增 `fix-0173-check` 16 项（pdf.js 接入、CSP 适配、jszip 顺序、vendor 完整性）
+- 更新 3 条过时断言（PDF 从 iframe 改为 canvas，测试跟着功能走）
+- 27 个测试文件 **905 项** + 28 项视觉 + 13 项 docx 布局，全绿
 ## [0.17.2] - 2026-10-25
 
 ### 两个不同的根因，都不是同一回事
