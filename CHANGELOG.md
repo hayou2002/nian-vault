@@ -1,5 +1,53 @@
 # 念念收藏夹 - 更新日志
 
+## [0.19.2] - 2026-10-25
+
+### 失败面终于会说人话了
+
+之前失败只显示 `HTTP 400`——因为我在 `throw new Error(`HTTP ${res.status}`)`
+里把响应体丢了。而后端 `wrap()` 明明把原因写在 body 的 `error` 字段里：
+
+```js
+return c.json({ ok: false, error: msg, where }, 400);
+```
+
+这版三处都补上：
+
+- 前端读响应体，把 `error` 拼进错误信息
+- 后端 catch 里补 `where`（stack 第二行），直接指出哪一行抛的
+- 失败面板 `white-space: pre-wrap`，多行原因完整可见
+
+下次截图就能看到具体是哪一行出错，不用再猜。
+
+### Plyr 改成元数据就绪后才挂载
+
+原来是 `el.src = src; mountPlyr(el);` 紧挨着执行——Plyr 会接管 DOM、
+替换播放器结构，而 `error` 监听绑在原始 `<video>` 上，接管后可能失效。
+
+现在改成：
+```js
+el.addEventListener("loadedmetadata", () => mountPlyr(el), { once: true });
+```
+先让原生 `<video>` 把流拉起来、元数据就绪，再交给 Plyr 做控件层。
+加载路径上不再有多余的东西。
+
+### 兜底不再看文件大小
+
+原来 >64MB 不走 blob 兜底（怕撑爆内存）。但你实测就是大文件播不了，
+所以改成：直连失败一律试取字节，能读到就能播。
+（宿主 ResourceIO 整读 175MB 实测 842ms，内存也扛得住。）
+
+### 当前状态
+
+后端能力已用真实文件验证：
+```
+Range 首段/中段/尾部  → 206 + 字节与磁盘一致（沙箱回退路径）11 项全过
+整读 175MB            → 842ms 完整读回
+四种 read 返回形态     → 全部 206（{content} / Buffer / {text} / 抛错）
+```
+
+前端 `media-playback-check` 17 项、`range-fallback-check` 11 项全绿。
+
 ## [0.19.1] - 2026-10-25
 
 ### 400 的真因找到了：Range 用了错误的读取后端

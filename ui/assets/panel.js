@@ -161,7 +161,17 @@ async function mediaBlobUrl(fp, onProgress) {
       // 关键：不带任何自定义 header（包括 Range）。
       // 这条通道和图片/PDF/docx 完全一致——它们都正常，说明这条路能过宿主。
       const res = await hana.api.fetch(url);
-      if (!res || !res.ok) throw new Error(`HTTP ${res ? res.status : "无响应"}`);
+      if (!res || !res.ok) {
+        // 关键：后端 wrap() 把异常原因写在 body 的 error 字段里。
+        // 只报状态码等于把诊断信息丢掉，这里必须读出来。
+        let detail = "";
+        try {
+          const t = await res.text();
+          try { detail = JSON.parse(t)?.error || t.slice(0, 300); }
+          catch { detail = t.slice(0, 300); }
+        } catch { /* 读不出就算了 */ }
+        throw new Error(`HTTP ${res.status}${detail ? " · " + detail : ""}`);
+      }
 
       const total = Number(res.headers.get("content-length")) || 0;
       let blob;
@@ -277,8 +287,12 @@ async function paintMedia(root) {
 
     const wrap = el.closest(".fp-audio, .preview-body") || el.parentElement;
     const name = String(fp).split(/[\\/]/).pop();
-    const BIG = 64 * 1024 * 1024;
-    const size = Number(el.dataset.vsize || 0);
+    const isVideo = el.tagName.toLowerCase() === "video";
+
+    // 控件层等元数据就绪后再接管，别干扰加载
+    if (isVideo) {
+      el.addEventListener("loadedmetadata", () => { mountPlyr(el); }, { once: true });
+    }
 
     // 在线地址：直接给，浏览器原生流最合适
     if (isOnlineUrl(fp)) {
@@ -290,15 +304,15 @@ async function paintMedia(root) {
       return;
     }
 
-    // 本地文件：直连（流式），失败再兜底
+    // 本地文件：直连（流式）；失败则取字节兜底
     const src = mediaSrcUrl(fp);
-    let fellBack = false;
+    let stage = "direct";
     el.addEventListener("error", async () => {
       const code = el.error?.code ?? "?";
       const kinds = { 1: "加载被中止", 2: "取字节失败", 3: "解码失败", 4: "来源不支持" };
 
-      if (!fellBack && (!size || size <= BIG)) {
-        fellBack = true;
+      if (stage === "direct") {
+        stage = "blob";
         const bar = document.createElement("div");
         bar.className = "fp-progress";
         bar.innerHTML = `<div class="fp-progress-bar"></div><span class="fp-progress-txt">读取中…</span>`;
@@ -313,29 +327,30 @@ async function paintMedia(root) {
           } else txt.textContent = `读取中 ${fmtSize(got)}`;
         });
         bar.remove();
-        if (blobUrl) { el.src = blobUrl; el.load(); return; }
+        if (blobUrl) {
+          el.addEventListener("loadedmetadata", () => { if (isVideo) mountPlyr(el); }, { once: true });
+          el.src = blobUrl;
+          el.load();
+          return;
+        }
       }
 
       const why = mediaErrorOf(fp);
       showMediaError(wrap, el, name,
-        `${kinds[code] || "未知"}${why ? " · " + why : ""}${size > BIG ? " · 文件较大未走兜底" : ""}`, fp);
+        `${kinds[code] || "未知"}（错误码 ${code}）${why ? "\n" + why : ""}`, fp);
     });
     el.src = src;
-
-    // 控件层交给 Plyr（失败不影响播放，原生控件顶上）
-    if (el.tagName.toLowerCase() === "video") {
-      mountPlyr(el);
-    }
   }));
 }
 
 // 统一失败面：说清是哪一步出的问题，并给出「用系统播放器打开」这条路。
+// reason 里会带上后端返回的 error / where，方便定位到底哪一行抛的。
 function showMediaError(wrap, el, name, reason, fp) {
   if (!wrap) return;
   if (wrap.querySelector(".fp-open-sys[data-open-sys]")) return; // 不重复插
   wrap.insertAdjacentHTML("beforeend",
     `<div class="fp-err">❌ 无法播放 ${escapeHtml(name)}` +
-    `<br><span class="muted">${escapeHtml(reason)}</span>` +
+    `<br><span class="muted" style="white-space:pre-wrap;word-break:break-all">${escapeHtml(reason)}</span>` +
     `<br><button class="btn fp-open-sys" data-open-sys="${escapeAttr(fp)}">用系统播放器打开</button>` +
     `</div>`);
   const btn = wrap.querySelector(".fp-open-sys[data-open-sys]");
