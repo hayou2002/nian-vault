@@ -834,6 +834,18 @@ button.ai-pill:hover {
 .fp-img { max-width: 100%; max-height: 60vh; object-fit: contain; display: block; }
 /* 视频 */
 .fp-video { width: 100%; max-height: 60vh; background: #000; border-radius: var(--r); }
+/* 本地媒体读取进度（大文件取字节时给人反馈，不是黑屏干等） */
+.fp-progress { width: 100%; max-width: 420px; margin: 10px auto 0; display: flex;
+  flex-direction: column; gap: 6px; align-items: center; }
+.fp-progress-bar { --w: 0%; width: 100%; height: 5px; border-radius: 3px;
+  background: var(--c-line, #e5e5e5); position: relative; overflow: hidden; }
+.fp-progress-bar::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0;
+  width: var(--w, 0%); background: var(--c-accent, #4a7dff); transition: width .18s ease; }
+.fp-progress-txt { font-size: 11.5px; color: var(--c-muted); }
+.fp-open-sys { margin-top: 8px; padding: 5px 12px; font-size: 12px; cursor: pointer;
+  border: 1px solid var(--c-line); border-radius: var(--r); background: var(--c-card, #fff);
+  color: var(--c-text); }
+.fp-open-sys:hover { border-color: var(--c-accent, #4a7dff); }
 /* 音频 */
 .fp-audio { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 18px 0; }
 .fp-audio-ic { color: var(--c-muted); }

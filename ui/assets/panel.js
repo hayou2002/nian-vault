@@ -92,10 +92,28 @@ async function assetBlobUrl(rel) {
 // Invalid plugin API path（外部视频「媒体加载失败」的根因）。
 const _mediaBlobCache = new Map();    // fp -> blobUrl（完成后常驻）
 const _mediaBlobPending = new Map(); // fp -> Promise（进行中去重）
-async function mediaBlobUrl(fp) {
+
+// 按扩展名猜 MIME：blob 没有正确的 type 时，部分容器（mkv/avi）播放器会拒绝解码。
+function guessMediaType(fp) {
+  const ext = String(fp).split(".").pop().toLowerCase();
+  return {
+    mp4: "video/mp4", m4v: "video/mp4", webm: "video/webm", ogv: "video/ogg",
+    mov: "video/quicktime", mkv: "video/x-matroska", avi: "video/x-msvideo",
+    mp3: "audio/mpeg", m4a: "audio/mp4", aac: "audio/aac", wav: "audio/wav",
+    ogg: "audio/ogg", oga: "audio/ogg", flac: "audio/flac", opus: "audio/opus",
+  }[ext] || "";
+}
+
+// 读一个媒体文件的字节并变成 blob URL。
+// onProgress(received, total)：total 为 0 表示服务端没给 Content-Length。
+async function mediaBlobUrl(fp, onProgress) {
   const s = String(fp || "");
   if (!s) return "";
-  if (_mediaBlobCache.has(s)) return _mediaBlobCache.get(s);
+  if (_mediaBlobCache.has(s)) {
+    const hit = _mediaBlobCache.get(s);
+    onProgress?.(1, 1);
+    return hit;
+  }
   if (_mediaBlobPending.has(s)) return _mediaBlobPending.get(s);
   const isAbs = /^([A-Za-z]:[\\/]|\/)/.test(s);
   const url = isAbs ? `/external/raw?path=${encodeURIComponent(s)}` : `/_assets/${s.replace(/^[._]*assets[/_]/, "")}`;
@@ -103,7 +121,25 @@ async function mediaBlobUrl(fp) {
     try {
       const res = await hana.api.fetch(url);
       if (!res || !res.ok) throw new Error(`HTTP ${res ? res.status : "无响应"}`);
-      const blob = await res.blob();
+      const total = Number(res.headers.get("content-length")) || 0;
+      let blob;
+      if (res.body && typeof res.body.getReader === "function") {
+        // 流式读，能报进度；避免 await res.blob() 期间界面完全无反馈
+        const reader = res.body.getReader();
+        const chunks = [];
+        let received = 0;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          received += value.byteLength;
+          onProgress?.(received, total);
+        }
+        blob = new Blob(chunks, { type: guessMediaType(s) || "application/octet-stream" });
+      } else {
+        blob = await res.blob();
+        onProgress?.(blob.size, blob.size);
+      }
       const burl = URL.createObjectURL(blob);
       _mediaBlobCache.set(s, burl);
       return burl;
@@ -118,85 +154,83 @@ async function mediaBlobUrl(fp) {
   return task;
 }
 
-// 标签直连 URL：相对面板自己的 _surface/{token}/ basePath 解析，
-// token 在路径里，<video src> 不需要 header 也能过宿主鉴权。
-// 大视频靠浏览器原生 Range 按需拉段，不整只进内存。
-function mediaSrcUrl(fp) {
-  const s = String(fp || "");
-  if (!s) return "";
-  const isAbs = /^([A-Za-z]:[\\/]|\/)/.test(s);
-  const rel = isAbs
-    ? `external/raw?path=${encodeURIComponent(s)}`
-    : `_assets/${s.replace(/^[._]*assets[/_]/, "")}`;
-
-  // 关键：不能相对页面路径拼。
-  // 页面在 /api/apps/{id}/ui/_surface/{token}/ 下，而 ui 是【静态文件服务】，
-  // external/raw 不是磁盘上的文件 → 404 HTML 错误页 → <video> 报错误码 4。
-  // 正解是走 routes 动态路由，凭据用 query 带：
-  //   宿主鉴权链 = header(X-Hana-App-Surface-Session) || query(appSurfaceSession) || cookie
-  // 标签发请求带不了 header，但 query 可以。
-  const appId = (/\/api\/apps\/([^/]+)\//.exec(location.pathname) || [])[1];
-  // 唯一正确的 token 来源：location.search（SDK readSurfaceSession 同款）。
-  // pathname 里的 _surface/{...} 是 base64 的 session 描述，不是 token。
-  const token = new URLSearchParams(location.search).get("appSurfaceSession") || "";
-  if (!appId) {
-    // 兜底：认不出页面形态时退回相对拼法（老宿主）
-    const base = location.origin + location.pathname.replace(/[^/]*$/, "");
-    return new URL(rel, base).href;
-  }
-  const sep = rel.includes("?") ? "&" : "?";
-  const auth = token ? `${sep}appSurfaceSession=${encodeURIComponent(token)}` : "";
-  return `${location.origin}/api/apps/${appId}/routes/${rel}${auth}`;
+// 在线地址（http/https）直接交给浏览器：那才是真正的网络流。
+function isOnlineUrl(s) {
+  return /^https?:\/\//i.test(String(s || ""));
 }
 
-// video / audio 的 blob 填充：和图片同款机制（data-vsrc → mediaBlobUrl）。
-// 音视频文件大，交给浏览器自己的 blob URL 播放器，面板只管取字节。
+// 音视频填充：本地文件「取字节 → blob」，在线地址「直接给 src」。
+//
+// 为什么不直连本地路径：本地文件不是网址。之前几版都在拼 URL 让 <video>
+// 自己去请求（Range/直连/token），本质是把磁盘文件当远程资源用，
+// 一路上撞鉴权、静态目录、CSP 各种墙。自己把字节取回来最直接。
 async function paintMedia(root) {
   const box = root || document;
   const els = [...box.querySelectorAll("video[data-vsrc], audio[data-vsrc]")];
   await Promise.all(els.map(async (el) => {
-    const rel = el.dataset.vsrc;
+    const fp = el.dataset.vsrc;
     el.removeAttribute("data-vsrc");
-    // video：scoped URL 直连，浏览器原生 Range 边播边拉（大文件不进内存）。
-    // audio：小文件走 blob（一次性拉完，避免每次 seek 都打一次 206）。
-    if (el.tagName.toLowerCase() === "video") {
-      // 直连优先（Range 流式）。失败时：
-      //   ≤64MB → 降级 blob（走已验证的 hana.api.fetch 通道，能兜住中小文件）
-      //   >64MB  → 不试 blob（整读会撑爆），把错误码亮出来 + 系统播放器入口
-      const src = mediaSrcUrl(rel);
-      const BIG = 64 * 1024 * 1024;
-      const size = Number(el.dataset.vsize || 0);
-      let stage = "direct";
-      el.addEventListener("error", async () => {
-        const code = el.error?.code ?? "?";
-        const kinds = { 1: "加载被中止", 2: "网络/取字节失败", 3: "解码失败", 4: "来源不支持" };
-        if (stage === "direct" && (!size || size <= BIG)) {
-          stage = "blob";
-          const blobUrl = await mediaBlobUrl(rel);
-          if (blobUrl) { el.src = blobUrl; el.load(); return; }
-        }
-        const wrap = el.closest(".fp-audio, .preview-body");
-        if (wrap) wrap.insertAdjacentHTML("beforeend",
-          `<div class="fp-err">❌ 视频加载失败（${escapeHtml(String(rel).split(/[\\\\]/).pop())}）` +
-          `<br><span class="muted">错误码 ${code}：${kinds[code] || "未知"}${size > BIG ? " · 文件较大未走 blob 兜底" : " · 直连与 blob 都试过"}</span>` +
-          `<br><span class="muted" style="word-break:break-all">请求：${escapeHtml(src.slice(0, 200))}</span>` +
-          `<br><span class="muted" style="word-break:break-all">页面：${escapeHtml(location.pathname.slice(0, 120))}</span>` +
-          `<br><span class="muted">可以用右键「打开文件位置」交给系统播放器。</span></div>`);
-      });
-      el.src = src;
+    if (!fp) return;
+
+    const wrap = el.closest(".fp-audio, .preview-body") || el.parentElement;
+    const name = String(fp).split(/[\\/]/).pop();
+
+    // 在线地址：真正的网络流，浏览器原生 Range 最合适
+    if (isOnlineUrl(fp)) {
+      el.src = fp;
+      el.addEventListener("error", () => {
+        const kinds = { 1: "加载被中止", 2: "网络错误", 3: "解码失败", 4: "格式不支持" };
+        showMediaError(wrap, el, name, kinds[el.error?.code] || "未知", fp);
+      }, { once: true });
       return;
     }
-    const url = await mediaBlobUrl(rel);
-    if (url) el.src = url;
-    else {
-      // 取不到字节：给个明确的失败面，不留一个黑块
-      const wrap = el.closest(".fp-audio, .preview-body");
-      if (wrap) wrap.insertAdjacentHTML("beforeend",
-        `<div class="fp-err">❌ 媒体加载失败（${escapeHtml(rel.split("/").pop())}）</div>`);
+
+    // 本地文件：先放一个进度条，再取字节
+    const bar = document.createElement("div");
+    bar.className = "fp-progress";
+    bar.innerHTML = `<div class="fp-progress-bar"></div><span class="fp-progress-txt">读取中…</span>`;
+    wrap?.appendChild(bar);
+    const fill = bar.querySelector(".fp-progress-bar");
+    const txt = bar.querySelector(".fp-progress-txt");
+
+    const blobUrl = await mediaBlobUrl(fp, (got, total) => {
+      if (total > 0) {
+        const pct = Math.min(100, Math.round((got / total) * 100));
+        fill.style.setProperty("--w", pct + "%");
+        txt.textContent = `读取中 ${pct}%（${fmtSize(got)} / ${fmtSize(total)}）`;
+      } else {
+        txt.textContent = `读取中 ${fmtSize(got)}`;
+      }
+    });
+    bar.remove();
+
+    if (!blobUrl) {
+      showMediaError(wrap, el, name, "读不到文件内容", fp);
       el.remove();
+      return;
     }
+    el.src = blobUrl;
+    el.addEventListener("error", () => {
+      const kinds = { 1: "加载被中止", 2: "读取后被中断", 3: "解码失败", 4: "格式不支持" };
+      showMediaError(wrap, el, name, `${kinds[el.error?.code] || "未知"}（文件可能编码特殊，建议用系统播放器）`, fp);
+    }, { once: true });
   }));
 }
+
+// 统一失败面：说清是哪一步出的问题，并给出「用系统播放器打开」这条路。
+function showMediaError(wrap, el, name, reason, fp) {
+  if (!wrap) return;
+  if (wrap.querySelector(".fp-open-sys[data-open-sys]")) return; // 不重复插
+  wrap.insertAdjacentHTML("beforeend",
+    `<div class="fp-err">❌ 无法播放 ${escapeHtml(name)}` +
+    `<br><span class="muted">${escapeHtml(reason)}</span>` +
+    `<br><button class="btn fp-open-sys" data-open-sys="${escapeAttr(fp)}">用系统播放器打开</button>` +
+    `</div>`);
+  const btn = wrap.querySelector(".fp-open-sys[data-open-sys]");
+  btn?.addEventListener("click", () => openWithSystem(fp), { once: true });
+}
+
+// 扫一遍容器里所有 data-asset 的 <img>
 
 // 扫一遍容器里所有 data-asset 的 <img>，把 blob URL 填进去。
 // 之所以不直接在 innerHTML 里写 src：blob 是异步拿的，没法同步生成。
