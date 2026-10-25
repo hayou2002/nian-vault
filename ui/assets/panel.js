@@ -206,6 +206,59 @@ function isOnlineUrl(s) {
   return /^https?:\/\//i.test(String(s || ""));
 }
 
+// Plyr 懒加载：播放器控件层（倍速、画中画、音量、全屏）。
+// 加载失败就退回原生 <video>，不阻断播放。
+let _plyrPromise = null;
+function loadPlyr() {
+  if (_plyrPromise) return _plyrPromise;
+  _plyrPromise = (async () => {
+    try {
+      await ensureCss("./vendor/plyr.css");
+      const mod = await import("./vendor/plyr.min.js");
+      return mod?.default || globalThis.Plyr || null;
+    } catch (e) {
+      console.warn("[nian-vault] Plyr 加载失败，退回原生播放器：", e?.message || e);
+      return null;
+    }
+  })();
+  return _plyrPromise;
+}
+
+// 按需插一份样式表（CSP 允许 'self'）
+const _cssLoaded = new Set();
+function ensureCss(href) {
+  if (_cssLoaded.has(href)) return Promise.resolve();
+  return new Promise((res) => {
+    const l = document.createElement("link");
+    l.rel = "stylesheet";
+    l.href = href;
+    l.onload = () => { _cssLoaded.add(href); res(); };
+    l.onerror = () => { _cssLoaded.add(href); res(); };
+    document.head.appendChild(l);
+  });
+}
+
+// 用 Plyr 包装一个已就绪的 <video>；失败返回 null（调用方继续用原生）
+async function mountPlyr(el) {
+  try {
+    const Plyr = await loadPlyr();
+    if (!Plyr) return null;
+    const p = new Plyr(el, {
+      controls: ["play-large", "play", "progress", "current-time", "duration",
+                 "mute", "volume", "settings", "pip", "fullscreen"],
+      settings: ["speed"],
+      speed: { selected: 1, options: [0.75, 1, 1.25, 1.5, 1.75, 2] },
+      keyboard: { focused: true, global: false },
+      tooltips: { controls: true, seek: true },
+      i18n: { speed: "速度", normal: "正常", quality: "画质", mute: "静音", unmute: "取消静音" },
+    });
+    return p;
+  } catch (e) {
+    console.warn("[nian-vault] Plyr 挂载失败：", e?.message || e);
+    return null;
+  }
+}
+
 // 音视频填充：直连流式播放（App 内存里只占一个 URL 字符串）。
 //
 // <video src="..."> 是浏览器原生流式能力：按需 Range 拉段、边下边播，
@@ -268,6 +321,11 @@ async function paintMedia(root) {
         `${kinds[code] || "未知"}${why ? " · " + why : ""}${size > BIG ? " · 文件较大未走兜底" : ""}`, fp);
     });
     el.src = src;
+
+    // 控件层交给 Plyr（失败不影响播放，原生控件顶上）
+    if (el.tagName.toLowerCase() === "video") {
+      mountPlyr(el);
+    }
   }));
 }
 

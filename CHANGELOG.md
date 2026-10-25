@@ -1,5 +1,67 @@
 # 念念收藏夹 - 更新日志
 
+## [0.19.1] - 2026-10-25
+
+### 400 的真因找到了：Range 用了错误的读取后端
+
+`wrap()` 的 catch 里写着：
+```js
+return c.json({ ok: false, error: String(err?.message || err) }, 400);
+```
+所以**所有路由异常都被包成 400**——那段 `HTTP 400` 是我的后端抛错了，
+不是宿主拒绝。而 `<video src>` 一上来就发 Range，于是每次都撞上它。
+
+具体在哪里抛：`/external/raw` 的 Range 分支用了
+```js
+const fd = fs.openSync(raw, "r");   // node:fs 直接读磁盘
+```
+但库外文件（`D:\...`）在宿主沙箱里是「资源」，`node:fs` 根本读不到 →
+抛 ENOENT/EACCES → 被 wrap 变成 400。
+
+**从头到尾都不是 token 问题，也不是路径问题**，是区间读用错了后端。
+（不过我前面那几处路径/token 的修正也确实是真的问题，只是它们不是最后这一关。）
+
+### 修法：Range 读失败时回退宿主接口
+
+```js
+try {
+  fs.openSync(raw, "r");      // 优先：快
+  ...readSync 切区间...
+} catch {
+  const whole = await v.extFs.readBytes(raw);   // 回退：宿主管道
+  slice = whole.subarray(start, start + len);
+}
+```
+
+宿主 ResourceIO 没有区间读能力（只有 open/pick/saveFile/requestAccess），
+所以回退是整读再切。大文件会浪费一次全读，但先让功能通。
+
+### 顺便：真的接了 Plyr 播放器
+
+按用户要求接入了轻量播放器 Plyr（vendor 里 110KB JS + 32KB CSS，无依赖）：
+
+- 控件：播放/进度/时间/音量/倍速/画中画/全屏
+- 懒加载：第一次播放才载入，加载失败自动退回原生 `<video>`
+- 样式按需插 `<link>`（CSP 允许 'self'）
+- 中文文案（速度/正常/画质/静音）
+
+### 验证
+
+模拟真实沙箱（`fs.openSync` 抛错、`extFs` 可读），三种 Range 全测：
+
+```
+首段 bytes=0-1048575   → 206 ✓ 1MB ✓ 内容与磁盘一致 ✓ 走了 extFs 回退 ✓
+中段 bytes=50MB-...    → 206 ✓ 长度 ✓ 内容与磁盘一致 ✓
+尾部 bytes=(total-4MB)- → 206 ✓ 有数据 ✓ 末字节一致 ✓   ← moov 就在这附近
+```
+
+**11 项全过**。尾部 Range 通过意味着播放器能拿到 moov，这是这个 MP4 能播的关键。
+
+### 测试
+
+- 新增 `range-fallback-check` 11 项：沙箱场景下三种 Range + 字节级校验
+- `media-playback-check` 17 项、`direct-search-token-e2e` 直连端到端
+
 ## [0.19.0] - 2026-10-25
 
 ### 两个关键点终于同时对了
