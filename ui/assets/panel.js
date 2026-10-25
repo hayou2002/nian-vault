@@ -136,7 +136,9 @@ function mediaSrcUrl(fp) {
   //   宿主鉴权链 = header(X-Hana-App-Surface-Session) || query(appSurfaceSession) || cookie
   // 标签发请求带不了 header，但 query 可以。
   const appId = (/\/api\/apps\/([^/]+)\//.exec(location.pathname) || [])[1];
-  const token = (/\/_surface\/([^/]+)/.exec(location.pathname) || [])[1];
+  // 唯一正确的 token 来源：location.search（SDK readSurfaceSession 同款）。
+  // pathname 里的 _surface/{...} 是 base64 的 session 描述，不是 token。
+  const token = new URLSearchParams(location.search).get("appSurfaceSession") || "";
   if (!appId) {
     // 兜底：认不出页面形态时退回相对拼法（老宿主）
     const base = location.origin + location.pathname.replace(/[^/]*$/, "");

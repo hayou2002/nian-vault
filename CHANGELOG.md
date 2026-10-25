@@ -1,5 +1,73 @@
 # 念念收藏夹 - 更新日志
 
+## [0.18.6] - 2026-10-25
+
+### 视频黑屏的最后一层：token 抓错了地方
+
+上一版把 URL 改到 `routes/` 后仍然报错误码 4。真正的错在**凭据取错源**。
+
+SDK 里的权威实现只有四行：
+
+```js
+function readSurfaceSession(w) {
+  return new URLSearchParams(w.location.search).get("appSurfaceSession") || null;
+}
+```
+
+真正的 token 在 **`location.search`**（URL 的 `?` 后面）。
+而我一直在 pathname 里正则抓 `_surface/{...}` 那段——
+那其实是 base64 编码的 session 描述 JSON：
+
+```
+eyJzY2hlbWFWZXJzaW9uIjoxLCJzZXJ2aWNlSWQiOiJhcHBzZXNzaW9uOjc0YjgyZTRmIn0
+→ {"schemaVersion":1,"serviceId":"appsession:74b82e4f"}
+```
+
+拿这个描述当 token 去请求 → 宿主校验不过 → 返回 403 的 **JSON** →
+`<video>` 收到 JSON → `error.code = 4`（来源不支持）。
+
+### 为什么图片/PDF/docx 一直是好的
+
+它们全部走 `hana.api.fetch`，而 SDK 内部会自动从 `location.search` 取 token 放 header。
+只有视频为了支持 Range 流式播放，绕开 SDK 自己拼 URL，于是掉进了这个坑：
+拼对了路径、拼错了凭据。
+
+### 修法
+
+```js
+const token = new URLSearchParams(location.search).get("appSurfaceSession") || "";
+```
+
+一行。没有新增依赖，没有换播放器。
+
+### 关于「换轻量播放器」
+
+没有换，理由是**换播放器解决不了这个问题**：
+video.js / artplayer 只负责解码和控件，字节还得自己去取；
+token 抓错，任何播放器都拿不到数据。
+原生 `<video>` 本身没问题——端到端测试里 `readyState=4`（HAVE_ENOUGH_DATA）
+就是浏览器把整条流读到「数据足够」的硬证据。
+多引一个库只多一层可能出错的地方。
+
+### 验证（完全复刻宿主形态）
+
+页面：`/api/apps/nian-vault/ui/_surface/{base64描述}/panel.html?appSurfaceSession=TOKEN`
+视频：`/api/apps/nian-vault/routes/external/raw?path=...&appSurfaceSession=TOKEN`
+
+真实 Edge + 真实 175MB 视频：
+
+```
+状态: meta 8531s 1600x720
+{ code:'timeout', readyState:4, duration:8531, vw:1600 }
+→ ✓ 完整加载
+```
+
+### 测试
+
+- `mediasrc-url-check` 重写 10 项：强制断言「token 来自 search 而非 pathname 描述」
+- 新增 `video-e2e-real`：复刻真实页面形态的端到端加载验证
+- 31 个测试文件 **1412 项** + 28 视觉 + 13 docx 布局，全绿
+
 ## [0.18.5] - 2026-10-25
 
 ### 黑屏真凶：视频请求打到了 ui 静态目录，404 HTML 被当成视频
