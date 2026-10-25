@@ -1004,3 +1004,24 @@ button.ai-pill:hover {
   font-size: 10px; font-weight: 600; letter-spacing: .02em; vertical-align: 1px;
   border-radius: 3px; background: color-mix(in srgb, var(--c-accent) 15%, transparent);
   color: var(--c-accent); }
+
+/* ===== Word(.docx) 预览 ===== */
+/* 滚动容器：文档再长也只在这个框里滚 */
+.fp-docx { max-height: 68vh; overflow: auto; background: #f2eee6;
+  border-radius: var(--r); padding: 12px; }
+/* 白纸感：每页一张纸，页与页之间留缝 */
+.fp-docx .nv-docx-wrapper { background: transparent; padding: 0; }
+.fp-docx section.nv-docx { background: #fff; color: #1c1c1c;
+  box-shadow: 0 1px 4px rgb(0 0 0 / .14); border-radius: 3px;
+  margin: 0 auto 12px; padding: 28px 32px; }
+.fp-docx section.nv-docx:last-child { margin-bottom: 0; }
+/* 文档内部排版：按 Word 的语义给一套合理默认值 */
+.fp-docx section.nv-docx,
+.fp-docx section.nv-docx * { font-family: "Microsoft YaHei", "PingFang SC", serif; }
+.fp-docx section.nv-docx p { margin: 0 0 .62em; line-height: 1.75; }
+.fp-docx section.nv-docx table { border-collapse: collapse; margin: .6em 0; max-width: 100%; }
+.fp-docx section.nv-docx td,
+.fp-docx section.nv-docx th { border: 1px solid #cfcfcf; padding: 5px 9px; vertical-align: top; }
+.fp-docx section.nv-docx img { max-width: 100%; height: auto; }
+/* 内部滚动条细一点，别抢纸的注意力 */
+.fp-docx::-webkit-scrollbar { width: 8px; height: 8px; }

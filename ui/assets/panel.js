@@ -132,7 +132,9 @@ const EXT_TYPE = {
   png: "image", jpg: "image", jpeg: "image", gif: "image", webp: "image", bmp: "image", svg: "image", ico: "image",
   mp4: "video", mkv: "video", mov: "video", avi: "video", webm: "video", flv: "video", wmv: "video", m4v: "video",
   mp3: "audio", wav: "audio", ogg: "audio", flac: "audio", m4a: "audio", aac: "audio", wma: "audio",
-  pdf: "pdf", doc: "file", docx: "file", xls: "file", xlsx: "file", ppt: "file", pptx: "file",
+  pdf: "pdf", doc: "doc", docx: "doc",
+  xls: "sheet", xlsx: "sheet", csv: "sheet",
+  ppt: "slide", pptx: "slide",
   txt: "text", md: "text", csv: "text", json: "text",
   zip: "file", rar: "file", "7z": "file", tar: "file", gz: "file",
   exe: "file", msi: "file", apk: "file", dmg: "file",
@@ -2961,6 +2963,10 @@ async function previewAsset(fp, meta) {
     body = `<div class="fp-text" id="pv-text"><div class="muted fp-loading">正在读取…</div></div>`;
   } else if (type === "pdf") {
     body = `<iframe class="fp-pdf" src="${escapeAttr(url)}" title="${escapeAttr(name)}"></iframe>`;
+  } else if (type === "doc" && /\.docx$/i.test(name)) {
+    // Word 预览：docx-preview（74KB 纯 JS，不用 Worker，不碰 WASM）
+    // 老 .doc 是二进制格式，这个库读不了，走下面的降级分支
+    body = `<div class="fp-docx" id="pv-docx"><div class="muted fp-loading">正在解析文档…</div></div>`;
   } else {
     // 诚实降级：面板里画不出来，给图标和系统打开入口
     body = `<div class="fp-none"><div class="fp-none-ic">${icon(TYPE_ICONS[type] || "file", 46)}</div>` +
@@ -3015,7 +3021,73 @@ async function previewAsset(fp, meta) {
         });
       }
   }
+  renderDocx(ov);
   return closePreview;
+}
+
+// 把 .docx 渲染进预览框。
+// 三个坑都踩过了：
+//   1. 沙箱禁 worker → 只能用纯 JS 版
+//   2. img-src 只放 data: → 必须 useBase64URL:true，否则图片全裂
+//   3. fetch 要走 hana.api（带凭据），裸 fetch 拿不到包内路由鉴权
+let _docxMod = null;
+async function renderDocx(scope) {
+  const box = scope.querySelector("#pv-docx");
+  if (!box) return;
+  // 从当前预览的标题取文件名，再反查它属于哪个资产路径
+  const nameEl = scope.querySelector(".fp-name");
+  const name = nameEl?.getAttribute("title") || "";
+  const fp = name ? findAssetPathByName(name) : "";
+  if (!fp) {
+    box.innerHTML = `<div class="fp-err">❌ 找不到这个文件在库里的位置</div>`;
+    return;
+  }
+  try {
+    if (!_docxMod) {
+      _docxMod = await import("./vendor/docx-preview.mjs");
+      if (!window.JSZip) {
+        // jszip 是 UMD，用动态 script 兜底（panel.html 里没引也能工作）
+        await new Promise((res, rej) => {
+          const s = document.createElement("script");
+          s.src = "./assets/vendor/jszip.min.js";
+          s.onload = res;
+          s.onerror = () => rej(new Error("jszip 加载失败"));
+          document.head.appendChild(s);
+        });
+      }
+    }
+    const url = assetUrl(fp);
+    const resp = await hana.api.fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const blob = await resp.blob();
+    box.innerHTML = "";
+    await _docxMod.renderAsync(blob, box, undefined, {
+      className: "nv-docx",
+      inWrapper: true,
+      breakPages: true,
+      ignoreWidth: false,
+      ignoreHeight: false,
+      useBase64URL: true,     // CSP 只认 data:，这行不能去
+      renderHeaders: true,
+      renderFooters: true,
+      renderFootnotes: true,
+    });
+    // 文档里可能夹带超链接，一律禁掉跳转（沙箱会拦，点了没反应反而更困惑）
+    box.querySelectorAll("a[href]").forEach((a) => {
+      a.removeAttribute("href");
+      a.style.cursor = "default";
+    });
+  } catch (err) {
+    box.innerHTML =
+      `<div class="fp-err">❌ 文档渲染失败：${escapeHtml(err?.message || String(err))}` +
+      `<br><span class="muted">可以用右键「打开文件位置」交给 Word 打开。</span></div>`;
+  }
+}
+
+// 按文件名反查它在 filesItems 里的完整相对路径
+function findAssetPathByName(name) {
+  const hit = (filesItems || []).find((x) => (x.name || x.path?.split(/[\\/]/).pop()) === name);
+  return hit?.path || "";
 }
 
 // 库内文件 → 交给宿主 SDK 的资源引用。

@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- 念念收藏夹卡片封面：按 hana-vibecoding 封面规范
+       深色圆角方块 + 单色极简剪影，符号占 55~65%，四周留白 -->
+  <defs>
+    <linearGradient id="cv-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3a332c"/>
+      <stop offset="1" stop-color="#1e1a16"/>
+    </linearGradient>
+    <radialGradient id="cv-glow" cx="0.72" cy="0.22" r="0.7">
+      <stop offset="0" stop-color="#fdfaf6" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#fdfaf6" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect x="0" y="0" width="512" height="512" rx="104" fill="url(#cv-bg)"/>
+  <rect x="0" y="0" width="512" height="512" rx="104" fill="url(#cv-glow)"/>
+
+  <!-- 符号：摊开的书 + 一枚低语气泡，单色暖白剪影。
+       整体用 transform 放大到约占 60%（规范 55~65%），保证缩到 32px 还认得出。 -->
+  <g transform="translate(256 256) scale(1.28) translate(-256 -256)">
+  <g fill="none" stroke="#fdfaf6" stroke-width="17" stroke-linecap="round" stroke-linejoin="round">
+    <!-- 摊开的书（两页） -->
+    <path d="M256 196c-34-27-80-31-118-23v196c38-8 84-4 118 23 34-27 80-31 118-23V173c-38-8-84-4-118 23z"
+          fill="#fdfaf6" fill-opacity="0.10"/>
+    <!-- 书脊 -->
+    <path d="M256 196v196" stroke-width="15"/>
+    <!-- 左页文字行 -->
+    <path d="M170 240h56M170 282h56M170 324h38" stroke-width="13" opacity="0.55"/>
+    <!-- 右页文字行 -->
+    <path d="M286 240h56M286 282h56M304 324h38" stroke-width="13" opacity="0.55"/>
+  </g>
+
+  <!-- 低语气泡：右下，实心，做视觉重心 -->
+  <g>
+    <path d="M316 350h104a26 26 0 0 0 26-26v-40a26 26 0 0 0-26-26h-56l-26-22v22h-22a26 26 0 0 0-26 26v40a26 26 0 0 0 26 26z"
+          fill="#fdfaf6"/>
+    <circle cx="342" cy="304" r="9" fill="#2b241c"/>
+    <circle cx="372" cy="304" r="9" fill="#2b241c"/>
+    <circle cx="402" cy="304" r="9" fill="#2b241c"/>
+  </g>
+  </g>
+</svg>
