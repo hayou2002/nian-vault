@@ -2326,7 +2326,7 @@ function renderFilesBody() {
     const tint = f.isDir ? "dir" : String(f.type || "file");
     const ic = f.isDir ? icon("folder", 16) : icon(TYPE_ICONS[f.type] || "file", 16);
     const meta = f.isDir
-      ? `${f.count} 项`
+      ? `${f.count ?? 0} 项`
       : `${fmtSize(f.size)}${f.mtime ? ` · ${String(f.mtime).slice(0, 10)}` : ""}`;
     const showCb = filesPickMode || picked;
     const extCls = f.external ? " frow-local" : "";
@@ -2355,7 +2355,7 @@ function renderFilesBody() {
       `<input type="checkbox" class="frow-cb" data-cb="${escapeAttr(f.path)}"${picked ? " checked" : ""}>` +
       thumb +
       `<span class="fg-n" title="${escapeAttr(f.name)}">${escapeHtml(f.name)}${f.external ? ' <b class="ext-badge">本机</b>' : ""}</span>` +
-      `<span class="fg-m">${f.isDir ? `${f.count} 项` : fmtSize(f.size)}</span>` +
+      `<span class="fg-m">${f.isDir ? `${f.count ?? 0} 项` : fmtSize(f.size)}</span>` +
       `</div>`;
   };
 
@@ -2389,7 +2389,14 @@ function renderFilesBody() {
       clearTimeout(clickTimer);
       clickTimer = setTimeout(() => {
         if (isExternal) {
-          if (!isDir) { openWithSystem(fp); return; }
+          if (!isDir) {
+            // 库外文件也先试面板内预览，装不下（比如 .exe）再交给系统。
+            // 之前这里直接 openWithSystem，等于把预览能力关在库外了。
+            const meta = filesItems.find((x) => x.path === fp);
+            if (canPreviewInline(fp, meta)) { previewAsset(fp, meta); return; }
+            openWithSystem(fp);
+            return;
+          }
           // 文件夹。两种情形：
           //   a) 已经在某个外部目录内部（extCtx 有值）→ 相对它算子路径
           //   b) 在库内根列表里点的外部快捷方式（extCtx 为 null）→ 它自己就是根
@@ -2939,6 +2946,18 @@ async function deleteAssetFlow(fp, isDir) {
   await loadCategories();
 }
 
+// 这个文件能不能在面板里直接看。决定"点一下就预览"还是"交给系统程序"。
+function canPreviewInline(fp, meta) {
+  const name = String(fp).split(/[\\/]/).pop();
+  const type = meta?.type || guessTypeOf(name);
+  if (["image", "video", "audio", "pdf", "text", "md", "doc"].includes(type)) {
+    // 老 .doc / .ppt / .xls 是二进制格式，docx-preview 读不了
+    if (type === "doc" && !/\.docx$/i.test(name)) return false;
+    return true;
+  }
+  return false;
+}
+
 // 面板内预览。双击文件走这里；「用系统应用打开」仍走 openAssetFile。
 // 资源 URL 统一走 /_assets/ 前缀（routes 里 /asset/* 与 /_assets/* 都注册了）。
 async function previewAsset(fp, meta) {
@@ -3056,7 +3075,11 @@ async function renderDocx(scope) {
         });
       }
     }
-    const url = assetUrl(fp);
+    // 库内走 /asset/*（库内 fs）；库外走 /external/raw（宿主资源接口）
+    const isAbs = /^([A-Za-z]:[\\/]|\/)/.test(fp);
+    const url = isAbs
+      ? `/external/raw?path=${encodeURIComponent(fp)}`
+      : assetUrl(fp);
     const resp = await hana.api.fetch(url);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const blob = await resp.blob();
@@ -3484,7 +3507,7 @@ window.__refCard = (name, alias) => {
   const url = assetUrl(f.path);
   const tint = f.isDir ? "dir" : String(f.type || "file");
   const badge = f.isDir ? "文件夹" : (TYPE_LABEL[f.type] || "文件");
-  const meta = f.isDir ? `${f.count} 项` : fmtSize(f.size);
+  const meta = f.isDir ? `${f.count ?? 0} 项` : fmtSize(f.size);
 
   if (f.isDir) {
     return `<span class="ref-card ref-card-dir" data-tint="${tint}" data-ref-card="${escapeAttr(f.path)}">` +
