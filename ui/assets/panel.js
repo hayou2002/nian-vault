@@ -104,8 +104,14 @@ function guessMediaType(fp) {
   }[ext] || "";
 }
 
+// 读取失败的真实原因，界面直接展示这条（不要把诊断信息藏在 console 里）。
+const _mediaErr = new Map(); // fp -> 人类可读的错误描述
+
 // 读一个媒体文件的字节并变成 blob URL。
-// onProgress(received, total)：total 为 0 表示服务端没给 Content-Length。
+// onProgress(received, total)：total 为 0 表示不知道总大小。
+//
+// 大文件走分块 Range（每段 4MB）：服务端支持 206，分块既能有准确进度，
+// 也能绕开「一次性返回超大响应体」这类未知限制。
 async function mediaBlobUrl(fp, onProgress) {
   const s = String(fp || "");
   if (!s) return "";
@@ -116,35 +122,71 @@ async function mediaBlobUrl(fp, onProgress) {
   }
   if (_mediaBlobPending.has(s)) return _mediaBlobPending.get(s);
   const isAbs = /^([A-Za-z]:[\\/]|\/)/.test(s);
-  const url = isAbs ? `/external/raw?path=${encodeURIComponent(s)}` : `/_assets/${s.replace(/^[._]*assets[/_]/, "")}`;
+  const base = isAbs ? `/external/raw?path=${encodeURIComponent(s)}` : `/_assets/${s.replace(/^[._]*assets[/_]/, "")}`;
+
   const task = (async () => {
+    _mediaErr.delete(s);
     try {
-      const res = await hana.api.fetch(url);
-      if (!res || !res.ok) throw new Error(`HTTP ${res ? res.status : "无响应"}`);
-      const total = Number(res.headers.get("content-length")) || 0;
-      let blob;
-      if (res.body && typeof res.body.getReader === "function") {
-        // 流式读，能报进度；避免 await res.blob() 期间界面完全无反馈
-        const reader = res.body.getReader();
-        const chunks = [];
-        let received = 0;
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          chunks.push(value);
-          received += value.byteLength;
+      const CHUNK = 4 * 1024 * 1024;
+
+      // 第一段顺便探路：能拿 206 就分段拉，拿 200 说明服务端忽略 Range（整读）
+      const first = await hana.api.fetch(base, { headers: { Range: `bytes=0-${CHUNK - 1}` } });
+      if (!first || !first.ok) {
+        throw new Error(`HTTP ${first ? first.status : "无响应"}${first && first.status === 403 ? "（鉴权未通过）" : ""}`);
+      }
+
+      let chunks = [];
+      let received = 0;
+      let total = 0;
+      let canRange = first.status === 206;
+
+      if (canRange) {
+        const cr = first.headers.get("content-range") || "";
+        const m = /\/(\d+)\s*$/.exec(cr);
+        total = m ? Number(m[1]) : 0;
+      } else {
+        total = Number(first.headers.get("content-length")) || 0;
+      }
+
+      chunks.push(new Uint8Array(await first.arrayBuffer()));
+      received += chunks[0].byteLength;
+      onProgress?.(received, total);
+
+      if (canRange && total > 0) {
+        // 继续按段拉，直到拿完
+        while (received < total) {
+          const end = Math.min(received + CHUNK - 1, total - 1);
+          const r = await hana.api.fetch(base, { headers: { Range: `bytes=${received}-${end}` } });
+          if (!r || !r.ok) throw new Error(`第 ${Math.floor(received / CHUNK) + 1} 段失败：HTTP ${r ? r.status : "无响应"}`);
+          const seg = new Uint8Array(await r.arrayBuffer());
+          if (!seg.byteLength) break; // 防御：空段直接收手，别死循环
+          chunks.push(seg);
+          received += seg.byteLength;
           onProgress?.(received, total);
         }
-        blob = new Blob(chunks, { type: guessMediaType(s) || "application/octet-stream" });
-      } else {
-        blob = await res.blob();
-        onProgress?.(blob.size, blob.size);
+        if (received < total) throw new Error(`只读到 ${fmtSize(received)} / ${fmtSize(total)}，未读完`);
+      } else if (!canRange) {
+        // 服务端整读：把它当一次性响应读完整
+        const reader = first.body?.getReader?.();
+        if (reader) {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+            received += value.byteLength;
+            onProgress?.(received, total);
+          }
+        }
       }
+
+      const blob = new Blob(chunks, { type: guessMediaType(s) || "application/octet-stream" });
       const burl = URL.createObjectURL(blob);
       _mediaBlobCache.set(s, burl);
       return burl;
     } catch (err) {
-      console.warn("[nian-vault] 媒体读取失败：", s, err?.message || err);
+      const msg = String(err?.message || err);
+      _mediaErr.set(s, msg);
+      console.warn("[nian-vault] 媒体读取失败：", s, err);
       return "";
     } finally {
       _mediaBlobPending.delete(s);
@@ -152,6 +194,11 @@ async function mediaBlobUrl(fp, onProgress) {
   })();
   _mediaBlobPending.set(s, task);
   return task;
+}
+
+// 取某次失败的详细原因（界面用）
+function mediaErrorOf(fp) {
+  return _mediaErr.get(String(fp || "")) || "";
 }
 
 // 在线地址（http/https）直接交给浏览器：那才是真正的网络流。
@@ -205,7 +252,8 @@ async function paintMedia(root) {
     bar.remove();
 
     if (!blobUrl) {
-      showMediaError(wrap, el, name, "读不到文件内容", fp);
+      const why = mediaErrorOf(fp);
+      showMediaError(wrap, el, name, why ? `读取失败：${why}` : "读不到文件内容", fp);
       el.remove();
       return;
     }
