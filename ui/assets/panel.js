@@ -87,7 +87,38 @@ async function assetBlobUrl(rel) {
   return task;
 }
 
-// video / audio 的 blob 填充：和图片同款机制（data-vsrc → assetBlobUrl）。
+// 统一的媒体字节入口：库内相对路径走 /_assets/；库外绝对路径走 /external/raw。
+// 不能全塞给 assetBlobUrl——它拼 /_assets/D:\... 时 SDK 见反斜杠直接抛
+// Invalid plugin API path（外部视频「媒体加载失败」的根因）。
+const _mediaBlobCache = new Map();    // fp -> blobUrl（完成后常驻）
+const _mediaBlobPending = new Map(); // fp -> Promise（进行中去重）
+async function mediaBlobUrl(fp) {
+  const s = String(fp || "");
+  if (!s) return "";
+  if (_mediaBlobCache.has(s)) return _mediaBlobCache.get(s);
+  if (_mediaBlobPending.has(s)) return _mediaBlobPending.get(s);
+  const isAbs = /^([A-Za-z]:[\\/]|\/)/.test(s);
+  const url = isAbs ? `/external/raw?path=${encodeURIComponent(s)}` : `/_assets/${s.replace(/^[._]*assets[/_]/, "")}`;
+  const task = (async () => {
+    try {
+      const res = await hana.api.fetch(url);
+      if (!res || !res.ok) throw new Error(`HTTP ${res ? res.status : "无响应"}`);
+      const blob = await res.blob();
+      const burl = URL.createObjectURL(blob);
+      _mediaBlobCache.set(s, burl);
+      return burl;
+    } catch (err) {
+      console.warn("[nian-vault] 媒体读取失败：", s, err?.message || err);
+      return "";
+    } finally {
+      _mediaBlobPending.delete(s);
+    }
+  })();
+  _mediaBlobPending.set(s, task);
+  return task;
+}
+
+// video / audio 的 blob 填充：和图片同款机制（data-vsrc → mediaBlobUrl）。
 // 音视频文件大，交给浏览器自己的 blob URL 播放器，面板只管取字节。
 async function paintMedia(root) {
   const box = root || document;
@@ -95,7 +126,7 @@ async function paintMedia(root) {
   await Promise.all(els.map(async (el) => {
     const rel = el.dataset.vsrc;
     el.removeAttribute("data-vsrc");
-    const url = await assetBlobUrl(rel);
+    const url = await mediaBlobUrl(rel);
     if (url) el.src = url;
     else {
       // 取不到字节：给个明确的失败面，不留一个黑块
@@ -2128,6 +2159,8 @@ function refBadge(e) {
 }
 
 function fmtSize(n) {
+  // null/undefined 是"未知大小"（外部文件 stat 失败时），不是 0 字节
+  if (n === null || n === undefined || n === "") return "—";
   const b = Number(n) || 0;
   if (b < 1024) return `${b} B`;
   if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)} KB`;

@@ -1,5 +1,38 @@
 # 念念收藏夹 - 更新日志
 
+## [0.18.1] - 2026-10-25
+
+### 外部视频「媒体加载失败」+「0 B」+ 大小限制（三处）
+
+真机反馈：引用的库外视频（D:\AI\...）放不了，还显示「0 B」。
+另要求去除引用文件的大小限制。三处根因：
+
+#### ① 外部媒体走错了路
+
+0.18.0 的 paintMedia 把绝对路径塞给了 assetBlobUrl，它拼出
+`/_assets/D:\AI\...`——SDK 的 normalizePluginApiPath 见到反斜杠直接抛
+`Invalid plugin API path`（和 0.17.4 docx 是同一族 bug，这次轮到媒体）。
+
+新增 `mediaBlobUrl()` 统一入口：绝对路径走 `/external/raw?path=`，
+库内走 `/_assets/`；pending 去重 + cache 常驻（照图片 blob 的双表模式，
+第一版 finally 里删缓存是自废，当天修正）。
+
+#### ② 「0 B」是显示问题
+
+`fmtSize(null)` 里 `Number(null)===0`，外部文件 stat 失败拿不到 size 时
+显示成「0 B」。null 现在如实显示「—」（未知大小），不再装成 0 字节。
+
+#### ③ 50MB 上传上限 → 2GB
+
+`MAX_ASSET` 从 50MB 提到 2GB。没有装成「无限」：这套上传走 Hono
+parseBody 一次性读进内存，Node Buffer 的诚实上限就是 2GB 左右，
+再大需要流式改造（现在是整读整写）。引用（只记路径）从来不复制文件，
+天然无大小限制。
+
+### 测试
+
+新增 fix-0181-check 11 项。29 个测试文件 **952 项** + 28 视觉 + 13 docx 布局，全绿。
+
 ## [0.18.0] - 2026-10-25
 
 ### PDF 压扁修复
