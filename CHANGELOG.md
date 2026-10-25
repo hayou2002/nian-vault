@@ -1,5 +1,73 @@
 # 念念收藏夹 - 更新日志
 
+## [0.18.9] - 2026-10-25
+
+### 回到直连流式：不把文件塞进 App 内存
+
+上一版改成分块拉字节，方向还是错的。真正的原则很简单：
+
+> `<video src="url">` 天生就是流式的。浏览器自己按需拉取，
+> App 内存里只该有一个 URL 字符串。
+
+175MB 也不需要读进来——那本来就该是浏览器的事。
+
+### 之前为什么一直失败：token 取错位置
+
+宿主 bundle 里的 `Iq()` 写得很清楚：
+
+```js
+function Iq(t) {
+  const e = /^\/api\/apps\/([^/]+)\/ui(?:\/(.*))?$/.exec(t);
+  ...
+  const s = /* 段[1] */, i = /* 段[2] */;   // i = sessionToken
+  return { kind: "scoped", appId: s, sessionToken: i, relativePath: ... };
+}
+```
+
+而鉴权链是：
+```js
+const u = c.kind === "scoped" ? c.sessionToken        // ← 路径里的 token（权威）
+        : t.req.header(EM) || t.req.query(Y2)          // header 或 query
+        || cookie;
+```
+
+**`_surface/{token}/` 那一段就是权威 token。** 0.18.6 我误改成从 `location.search`
+取（那里是空的），反而把唯一正确的来源丢掉了。
+
+### 现在的做法
+
+```
+<video src="/api/apps/{id}/routes/external/raw?path=...&appSurfaceSession={pathname里的token}">
+```
+
+- 默认直连，浏览器原生 Range 流式拉取，App 内存只有 URL
+- token **pathname 优先**，`location.search` 只作老宿主兜底
+- 失败才条件兜底：≤64MB 取字节走 blob；>64MB 直接给系统播放器入口
+- 真实错误上屏（`取字节失败 · HTTP 403（鉴权未通过）`）
+
+### 端到端验证（这次完全按真实形态）
+
+真实页面 `/api/apps/nian-vault/ui/_surface/{token}/panel.html`，
+页面脚本只做一件事：`v.src = mediaSrcUrl(file)`，**不 fetch**。
+
+```
+视频: 175.0 MB
+状态: meta 8531s 1600x720
+Range 请求次数: 4          ← 只发了 4 段 Range，没有整读
+readyState: 4
+duration: 8531
+→ ✓ 直连流式可用（未把文件塞进内存）
+```
+
+**4 次 Range 请求**就是证据：浏览器自己把元数据解出来了，
+175MB 的 mdat 主体根本没动。
+
+### 测试
+
+- 新增 `direct-stream-e2e`：真实页面 + 真实 `<video src>` 直连 + 175MB 视频
+- `media-playback-check` 重写 18 项：直连构造、token 来源优先级、默认路径
+- `ext-raw-path-check` 7 项：宿主两条读取路径
+
 ## [0.18.8] - 2026-10-25
 
 ### 把失败原因摆到脸上 + 大文件改分块拉

@@ -104,6 +104,39 @@ function guessMediaType(fp) {
   }[ext] || "";
 }
 
+// 直连 URL：交给 <video src> 自己流式拉取，App 内存里只留一个字符串。
+//
+// 为什么能直连：宿主鉴权链有三条路——
+//   c.kind === "scoped" ? c.sessionToken : header || query(appSurfaceSession) || cookie
+// 其中 c.sessionToken 就是页面 pathname 里 /_surface/{token}/ 那一段。
+// <video> 发请求带不了自定义 header，但能带 query，所以把这段 token 放 query。
+//
+// 路径必须走 routes/：ui/ 是静态文件服务，只返回 ui 目录里真实存在的文件，
+// external/raw 是后端动态路由，挂的是 routes/ 前缀。
+function mediaSrcUrl(fp) {
+  const s = String(fp || "");
+  if (!s) return "";
+  const isAbs = /^([A-Za-z]:[\\/]|\/)/.test(s);
+  const rel = isAbs
+    ? `external/raw?path=${encodeURIComponent(s)}`
+    : `_assets/${s.replace(/^[._]*assets[/_]/, "")}`;
+
+  const appId = (/\/api\/apps\/([^/]+)\//.exec(location.pathname) || [])[1];
+  // token 优先取 pathname 的 _surface 段（权威）；search 只作补充。
+  const pathTok = (/\/_surface\/([^/]+)/.exec(location.pathname) || [])[1] || "";
+  const searchTok = new URLSearchParams(location.search).get("appSurfaceSession") || "";
+  let token = pathTok || searchTok;
+  try { token = decodeURIComponent(token); } catch { /* 保持原样 */ }
+
+  if (!appId) {
+    const base = location.origin + location.pathname.replace(/[^/]*$/, "");
+    return new URL(rel, base).href;
+  }
+  const sep = rel.includes("?") ? "&" : "?";
+  const auth = token ? `${sep}appSurfaceSession=${encodeURIComponent(token)}` : "";
+  return `${location.origin}/api/apps/${appId}/routes/${rel}${auth}`;
+}
+
 // 读取失败的真实原因，界面直接展示这条（不要把诊断信息藏在 console 里）。
 const _mediaErr = new Map(); // fp -> 人类可读的错误描述
 
@@ -206,11 +239,14 @@ function isOnlineUrl(s) {
   return /^https?:\/\//i.test(String(s || ""));
 }
 
-// 音视频填充：本地文件「取字节 → blob」，在线地址「直接给 src」。
+// 音视频填充：直连流式播放（App 内存里只占一个 URL 字符串）。
 //
-// 为什么不直连本地路径：本地文件不是网址。之前几版都在拼 URL 让 <video>
-// 自己去请求（Range/直连/token），本质是把磁盘文件当远程资源用，
-// 一路上撞鉴权、静态目录、CSP 各种墙。自己把字节取回来最直接。
+// <video src="..."> 是浏览器原生流式能力：按需 Range 拉段、边下边播，
+// 不需要 App 先把整个文件读进内存再喂过去。175MB 也只是个 URL 而已。
+//
+// 失败时按文件大小分流兜底：
+//   ≤64MB → 取字节走 blob（已验证通道）
+//   >64MB → 不硬撑，直接给系统播放器入口
 async function paintMedia(root) {
   const box = root || document;
   const els = [...box.querySelectorAll("video[data-vsrc], audio[data-vsrc]")];
@@ -221,8 +257,10 @@ async function paintMedia(root) {
 
     const wrap = el.closest(".fp-audio, .preview-body") || el.parentElement;
     const name = String(fp).split(/[\\/]/).pop();
+    const BIG = 64 * 1024 * 1024;
+    const size = Number(el.dataset.vsize || 0);
 
-    // 在线地址：真正的网络流，浏览器原生 Range 最合适
+    // 在线地址：直接给，浏览器原生流最合适
     if (isOnlineUrl(fp)) {
       el.src = fp;
       el.addEventListener("error", () => {
@@ -232,36 +270,37 @@ async function paintMedia(root) {
       return;
     }
 
-    // 本地文件：先放一个进度条，再取字节
-    const bar = document.createElement("div");
-    bar.className = "fp-progress";
-    bar.innerHTML = `<div class="fp-progress-bar"></div><span class="fp-progress-txt">读取中…</span>`;
-    wrap?.appendChild(bar);
-    const fill = bar.querySelector(".fp-progress-bar");
-    const txt = bar.querySelector(".fp-progress-txt");
+    // 本地文件：直连（流式），失败再兜底
+    const src = mediaSrcUrl(fp);
+    let fellBack = false;
+    el.addEventListener("error", async () => {
+      const code = el.error?.code ?? "?";
+      const kinds = { 1: "加载被中止", 2: "取字节失败", 3: "解码失败", 4: "来源不支持" };
 
-    const blobUrl = await mediaBlobUrl(fp, (got, total) => {
-      if (total > 0) {
-        const pct = Math.min(100, Math.round((got / total) * 100));
-        fill.style.setProperty("--w", pct + "%");
-        txt.textContent = `读取中 ${pct}%（${fmtSize(got)} / ${fmtSize(total)}）`;
-      } else {
-        txt.textContent = `读取中 ${fmtSize(got)}`;
+      if (!fellBack && (!size || size <= BIG)) {
+        fellBack = true;
+        const bar = document.createElement("div");
+        bar.className = "fp-progress";
+        bar.innerHTML = `<div class="fp-progress-bar"></div><span class="fp-progress-txt">读取中…</span>`;
+        wrap?.appendChild(bar);
+        const fill = bar.querySelector(".fp-progress-bar");
+        const txt = bar.querySelector(".fp-progress-txt");
+        const blobUrl = await mediaBlobUrl(fp, (got, total) => {
+          if (total > 0) {
+            const pct = Math.min(100, Math.round((got / total) * 100));
+            fill.style.setProperty("--w", pct + "%");
+            txt.textContent = `读取中 ${pct}%（${fmtSize(got)} / ${fmtSize(total)}）`;
+          } else txt.textContent = `读取中 ${fmtSize(got)}`;
+        });
+        bar.remove();
+        if (blobUrl) { el.src = blobUrl; el.load(); return; }
       }
-    });
-    bar.remove();
 
-    if (!blobUrl) {
       const why = mediaErrorOf(fp);
-      showMediaError(wrap, el, name, why ? `读取失败：${why}` : "读不到文件内容", fp);
-      el.remove();
-      return;
-    }
-    el.src = blobUrl;
-    el.addEventListener("error", () => {
-      const kinds = { 1: "加载被中止", 2: "读取后被中断", 3: "解码失败", 4: "格式不支持" };
-      showMediaError(wrap, el, name, `${kinds[el.error?.code] || "未知"}（文件可能编码特殊，建议用系统播放器）`, fp);
-    }, { once: true });
+      showMediaError(wrap, el, name,
+        `${kinds[code] || "未知"}${why ? " · " + why : ""}${size > BIG ? " · 文件较大未走兜底" : ""}`, fp);
+    });
+    el.src = src;
   }));
 }
 
